@@ -9,17 +9,21 @@ from tools import (
     calculate_currency_or_math,
     save_report_file,
     unreliable_live_rates,
+    generate_fusion360_cad,
+    generate_ltspice_circuit,
     TOOL_REGISTRY,
 )
 from agent_brain import CustomAgentBrain
 
 
 def test_tool_registry():
-    assert len(TOOL_REGISTRY) == 4
+    assert len(TOOL_REGISTRY) == 6
     assert "get_live_weather" in TOOL_REGISTRY
     assert "calculate_currency_or_math" in TOOL_REGISTRY
     assert "save_report_file" in TOOL_REGISTRY
     assert "unreliable_live_rates" in TOOL_REGISTRY
+    assert "generate_fusion360_cad" in TOOL_REGISTRY
+    assert "generate_ltspice_circuit" in TOOL_REGISTRY
 
 
 def test_weather_tool():
@@ -116,4 +120,87 @@ def test_mocked_agent_loop_with_error_recovery(tmp_path, monkeypatch):
     # Clean up created file
     if os.path.exists("recovery_report.txt"):
         os.remove("recovery_report.txt")
+
+
+def test_fusion360_cad_tool():
+    params = {"length": 80, "width": 40, "thickness": 4, "hole_diameter": 5}
+    res = generate_fusion360_cad("mounting_bracket", params, "test_bracket_fusion.py")
+    assert "Success" in res
+    assert os.path.exists("test_bracket_fusion.py")
+
+    with open("test_bracket_fusion.py", "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "adsk.core" in content
+    assert "adsk.fusion" in content
+    assert "addTwoPointRectangle" in content
+    os.remove("test_bracket_fusion.py")
+
+    # Test geometric validation conflict
+    invalid_params = {"length": 40, "width": 20, "thickness": 4, "hole_diameter": 50}
+    with pytest.raises(ValueError) as exc:
+        generate_fusion360_cad("mounting_bracket", invalid_params)
+    assert "Geometric Conflict" in str(exc.value)
+
+
+def test_ltspice_circuit_tool():
+    specs = {"cutoff_hz": 1000, "c_value_uf": 0.1}
+    res = generate_ltspice_circuit("TestFilter", "low_pass_filter", specs, "test_filter.cir")
+    assert "Success" in res
+    assert os.path.exists("test_filter.cir")
+
+    with open("test_filter.cir", "r", encoding="utf-8") as f:
+        netlist = f.read()
+    assert "* LTspice Simulation Netlist" in netlist
+    assert ".ac dec" in netlist
+    assert "R1 in out" in netlist
+    assert "C1 out 0 0.1u" in netlist
+    os.remove("test_filter.cir")
+
+    # Test invalid frequency
+    with pytest.raises(ValueError) as exc:
+        generate_ltspice_circuit("BadFilter", "low_pass_filter", {"cutoff_hz": -100})
+    assert "Cutoff frequency must be > 0" in str(exc.value)
+
+
+def test_multimodal_agent_loop(monkeypatch):
+    """
+    Verifies that CustomAgentBrain.run correctly accepts image_bytes and image_mime,
+    constructs the multimodal Content with image and text parts, and emits the start event.
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    agent = CustomAgentBrain(api_key="dummy_key_for_testing")
+
+    # Mock response
+    mock_resp = MagicMock()
+    mock_resp.function_calls = []
+    mock_resp.text = "I inspected the image and it is a 50mm square mounting plate."
+    mock_resp.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    agent.client.models.generate_content = MagicMock(return_value=mock_resp)
+
+    events = []
+    def on_step(evt, data):
+        events.append((evt, data))
+
+    dummy_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+    ans = agent.run(
+        "Analyze this bracket drawing",
+        image_bytes=dummy_png,
+        image_mime="image/png",
+        step_callback=on_step
+    )
+
+    assert "50mm" in ans
+    assert any(evt == "start" and data.get("has_image") is True for evt, data in events)
+
+    call_args = agent.client.models.generate_content.call_args
+    history = call_args.kwargs.get("contents")
+    assert len(history) >= 1
+    assert len(history[0].parts) == 2
+    assert history[0].parts[0].inline_data.data == dummy_png
+
+
 

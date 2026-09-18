@@ -257,6 +257,74 @@
       border-top: 1px solid var(--border);
     }
 
+    /* Multimodal Image Attachment */
+    .image-preview-bar {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+
+    .image-preview-bar.visible {
+      display: flex;
+    }
+
+    .preview-thumb {
+      width: 38px;
+      height: 38px;
+      object-fit: cover;
+      border-radius: 4px;
+      border: 1px solid var(--border-focus);
+    }
+
+    .preview-info {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      overflow: hidden;
+    }
+
+    .preview-name {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .preview-meta {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+
+    .preview-remove {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 3px;
+      transition: all 0.15s;
+    }
+
+    .preview-remove:hover {
+      color: var(--error);
+      background: rgba(239, 68, 68, 0.1);
+    }
+
+    .drag-over {
+      border-color: #3b82f6 !important;
+      background: #090d16 !important;
+    }
+
     .shortcut-hint {
       font-size: 11px;
       font-family: var(--mono);
@@ -590,9 +658,14 @@
       <span class="brand-title">the-brain</span>
       <span class="brand-tag">scratch-framework</span>
     </div>
-    <div class="status-pill" id="statusPill" onclick="toggleKeyBar()">
-      <div class="status-dot" id="statusDot"></div>
-      <span id="statusText">Checking...</span>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <button class="status-pill" onclick="openComparisonModal()" style="border-color: #3f3f46; color: #e4e4e7;">
+        <span>⚡ vs LangChain</span>
+      </button>
+      <div class="status-pill" id="statusPill" onclick="toggleKeyBar()">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Checking...</span>
+      </div>
     </div>
   </header>
 
@@ -608,21 +681,43 @@
 
       <!-- Presets -->
       <div class="presets-row">
-        <span class="preset-label">Test Tracks:</span>
-        <button class="preset-chip" onclick="loadPreset(1)">1. Weather (Single-tool)</button>
-        <button class="preset-chip" onclick="loadPreset(2)">2. Multi-Tool Chain (Tokyo)</button>
-        <button class="preset-chip" onclick="loadPreset(3)">3. Troublemaker (Self-Correction)</button>
+        <span class="preset-label">Tracks:</span>
+        <button class="preset-chip" onclick="loadPreset(1)">1. Weather</button>
+        <button class="preset-chip" onclick="loadPreset(2)">2. Tokyo Trip</button>
+        <button class="preset-chip" onclick="loadPreset(3)">3. Troublemaker</button>
+        <button class="preset-chip" onclick="loadPreset(4)">4. Fusion 360 CAD</button>
+        <button class="preset-chip" onclick="loadPreset(5)">5. LTspice Circuit</button>
+        <button class="preset-chip" onclick="loadPreset(6)">6. Hardware Co-Design</button>
+        <button class="preset-chip" onclick="loadPreset(7)">7. Photo Analysis</button>
       </div>
 
       <!-- Prompt Input -->
-      <div class="input-card">
+      <div class="input-card" id="inputCard">
         <textarea 
           id="promptInput" 
           class="prompt-textarea" 
-          placeholder="Enter goal or prompt for your agent..."
+          placeholder="Enter goal or prompt for your agent, or paste/attach a photo..."
         ></textarea>
+
+        <!-- Attached Photo Preview -->
+        <div class="image-preview-bar" id="imagePreviewBar">
+          <img id="imagePreviewThumb" class="preview-thumb" src="" alt="Thumbnail">
+          <div class="preview-info">
+            <span class="preview-name" id="imagePreviewName">photo.jpg</span>
+            <span class="preview-meta" id="imagePreviewMeta">0 KB</span>
+          </div>
+          <button type="button" class="preview-remove" onclick="removeAttachedImage()" title="Remove photo">&times; Remove</button>
+        </div>
+
         <div class="prompt-footer">
-          <span class="shortcut-hint">Ctrl + Enter to execute</span>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <input type="file" id="imageFileInput" accept="image/*" style="display: none;" onchange="handleImageFileSelect(event)">
+            <button type="button" class="btn-outline" style="padding: 4px 10px; font-size: 11px; display: inline-flex; align-items: center; gap: 6px; border-radius: 4px; cursor: pointer;" onclick="document.getElementById('imageFileInput').click()">
+              <span>📷</span>
+              <span>Add Photo</span>
+            </button>
+            <span class="shortcut-hint">Ctrl + Enter to execute • Ctrl + V to paste photo</span>
+          </div>
           <button class="btn" id="runBtn" onclick="runAgent()">
             <span id="btnText">Execute Loop</span>
           </button>
@@ -669,6 +764,14 @@
             </div>
             <div class="tool-desc">Simulates 503 error to test recovery</div>
           </div>
+          <div class="tool-item">
+            <div class="tool-name" style="color: #67e8f9;">generate_fusion360_cad</div>
+            <div class="tool-desc">Autodesk Fusion 360 3D CAD (.py)</div>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name" style="color: #cbd5e1;">generate_ltspice_circuit</div>
+            <div class="tool-desc">LTspice SPICE simulation (.cir / .net)</div>
+          </div>
         </div>
       </div>
 
@@ -688,12 +791,83 @@
 
   <!-- File Viewer Modal -->
   <div class="modal-overlay" id="fileModal" onclick="closeModal(event)">
-    <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-card" style="max-width: 760px;" onclick="event.stopPropagation()">
       <div class="modal-head">
-        <span id="modalFileName">file.txt</span>
-        <button class="modal-close" onclick="closeModal()">&times;</button>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span id="modalFileName" style="font-weight: 600; color: #fff;">file.txt</span>
+          <div id="modalTabs" style="display: none; gap: 6px;">
+            <button class="btn-outline active" id="tabSchematic" style="padding: 2px 8px; font-size: 11px;" onclick="switchModalTab('schematic')">📐 Drawn Circuit</button>
+            <button class="btn-outline" id="tabCode" style="padding: 2px 8px; font-size: 11px;" onclick="switchModalTab('code')">📝 Raw Code</button>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button class="btn-outline" id="openInAppBtn" style="display: none; padding: 3px 10px; font-size: 11px; border-color: #0284c7; color: #38bdf8;" onclick="openCurrentFileInApp()">⚡ Open in LTspice</button>
+          <button class="modal-close" onclick="closeModal()">&times;</button>
+        </div>
       </div>
+      <div id="modalSchematicContainer" style="display: none; padding: 14px; background: #050508; border-bottom: 1px solid var(--border);"></div>
       <div class="modal-body" id="modalFileContent"></div>
+    </div>
+  </div>
+
+  <!-- LangChain Comparison Modal -->
+  <div class="modal-overlay" id="comparisonModal" onclick="closeComparisonModal(event)">
+    <div class="modal-card" style="max-width: 820px;" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <span style="font-weight: 600; color: #fff;">⚡ Architectural Comparison: Custom Scratch Engine vs. LangChain</span>
+        <button class="modal-close" onclick="closeComparisonModal()">&times;</button>
+      </div>
+      <div class="modal-body" style="font-family: var(--sans); font-size: 13px; line-height: 1.6; max-height: 75vh;">
+        
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; font-family: var(--mono);">
+          <thead>
+            <tr style="border-bottom: 2px solid #333; text-align: left; color: #a1a1aa;">
+              <th style="padding: 8px;">Feature</th>
+              <th style="padding: 8px; color: #10b981;">Our Custom Engine</th>
+              <th style="padding: 8px; color: #f87171;">LangChain (AgentExecutor)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid #222;">
+              <td style="padding: 8px; font-weight: 600;">Core Decision Loop</td>
+              <td style="padding: 8px; color: #e4e4e7;">Direct while loop in ~120 lines of clear Python</td>
+              <td style="padding: 8px; color: #a1a1aa;">Hidden inside massive black-box package abstractions</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #222;">
+              <td style="padding: 8px; font-weight: 600;">Engineering Tools (CAD / SPICE)</td>
+              <td style="padding: 8px; color: #e4e4e7;">Passes native dicts directly to Fusion 360 and LTspice tools</td>
+              <td style="padding: 8px; color: #a1a1aa;">Requires strict Pydantic schemas; often crashes on nested parameters</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #222;">
+              <td style="padding: 8px; font-weight: 600;">Error Recovery</td>
+              <td style="padding: 8px; color: #e4e4e7;">Intercepts tool exceptions, feeds raw error to LLM for instant recovery</td>
+              <td style="padding: 8px; color: #a1a1aa;">Halts on unhandled exceptions unless custom error wrappers configured</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #222;">
+              <td style="padding: 8px; font-weight: 600;">Dependencies & Size</td>
+              <td style="padding: 8px; color: #e4e4e7;">Zero extra framework bloat (only google-genai + dotenv)</td>
+              <td style="padding: 8px; color: #a1a1aa;">50+ nested packages (pydantic, langchain-core, community)</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; font-weight: 600;">Step Latency</td>
+              <td style="padding: 8px; color: #e4e4e7;">~2-5s per step (fast, direct model execution)</td>
+              <td style="padding: 8px; color: #a1a1aa;">Slower due to multi-layer prompt wrapping & parsing overhead</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div style="background: #111116; border: 1px solid #27272a; padding: 14px; border-radius: 6px; margin-bottom: 16px;">
+          <h4 style="margin-bottom: 6px; color: #fff; font-size: 13px;">Why "Build the Brain, Not the Puppet" Matters for Engineers:</h4>
+          <p style="color: #a1a1aa; font-size: 12px; margin-bottom: 8px;">
+            In hardware co-design (e.g. designing an active circuit in <strong>LTspice</strong> and its matching physical mounting enclosure in <strong>Autodesk Fusion 360</strong>), data flow must be crystal clear.
+          </p>
+          <ul style="color: #d4d4d8; font-size: 12px; padding-left: 18px;">
+            <li><strong>Direct Traceability:</strong> You can see every intermediate frequency calculation and enclosure dimension passed between turns in the real-time stream.</li>
+            <li><strong>Self-Correction:</strong> If a geometric conflict occurs (e.g., hole diameter exceeds part width), the agent reads the domain exception and resizes the part automatically.</li>
+          </ul>
+        </div>
+
+      </div>
     </div>
   </div>
 
@@ -701,22 +875,90 @@
     const PRESETS = {
       1: "What is the current weather in Tokyo?",
       2: "Check the weather in Tokyo. Convert $1500 USD into Japanese Yen at 155.2 JPY/USD. Then write a complete travel summary report into 'tokyo_plan.txt'.",
-      3: "Fetch the live exchange rate for USD/EUR using unreliable_live_rates. If that fails or gives an error, do not give up: observe the error and calculate 500 * 0.92 using calculate_currency_or_math instead. Then write an incident report into 'recovery_log.txt'."
+      3: "Fetch the live exchange rate for USD/EUR using unreliable_live_rates. If that fails or gives an error, do not give up: observe the error and calculate 500 * 0.92 using calculate_currency_or_math instead. Then write an incident report into 'recovery_log.txt'.",
+      4: "Design a parametric sensor mounting bracket in Autodesk Fusion 360 with length 80mm, width 40mm, thickness 4mm, and two 5mm screw holes. Generate the complete Autodesk Fusion 360 script.",
+      5: "Design a passive low-pass RC filter circuit for LTspice with a target cutoff frequency of 1 kHz. Calculate the required resistor and capacitor values, and generate the complete simulation netlist.",
+      6: "Design a 12V to 5V precision voltage divider circuit for LTspice with R1=10k. Then design an Autodesk Fusion 360 3D electronic enclosure with length 100mm, width 60mm, and height 30mm to house the circuit, and write an engineering summary.",
+      7: "Inspect this attached photo carefully. If it shows a mechanical component or mounting plate, generate a parametric Autodesk Fusion 360 script to manufacture it. If it shows an electrical schematic or circuit, generate an LTspice simulation netlist."
     };
 
     let isRunning = false;
+    let attachedImageBase64 = null;
+    let attachedImageMime = null;
 
     // Initialize
     document.addEventListener("DOMContentLoaded", () => {
       checkStatus();
       refreshFiles();
 
-      document.getElementById("promptInput").addEventListener("keydown", (e) => {
+      const promptEl = document.getElementById("promptInput");
+      promptEl.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
           runAgent();
         }
       });
+
+      // Drag and drop image onto prompt box
+      const inputCard = document.getElementById("inputCard");
+      inputCard.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        inputCard.classList.add("drag-over");
+      });
+      inputCard.addEventListener("dragleave", () => {
+        inputCard.classList.remove("drag-over");
+      });
+      inputCard.addEventListener("drop", (e) => {
+        e.preventDefault();
+        inputCard.classList.remove("drag-over");
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          processImageFile(e.dataTransfer.files[0]);
+        }
+      });
+
+      // Paste image directly from clipboard (Ctrl + V)
+      promptEl.addEventListener("paste", (e) => {
+        if (e.clipboardData && e.clipboardData.items) {
+          for (const item of e.clipboardData.items) {
+            if (item.type.indexOf("image") !== -1) {
+              const file = item.getAsFile();
+              processImageFile(file);
+              break;
+            }
+          }
+        }
+      });
     });
+
+    function handleImageFileSelect(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      processImageFile(file);
+    }
+
+    function processImageFile(file) {
+      if (!file.type.startsWith("image/")) {
+        alert("Please select a valid image file (PNG, JPG, WEBP).");
+        return;
+      }
+      attachedImageMime = file.type;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        attachedImageBase64 = e.target.result;
+        document.getElementById("imagePreviewThumb").src = attachedImageBase64;
+        document.getElementById("imagePreviewName").textContent = file.name;
+        document.getElementById("imagePreviewMeta").textContent = `${file.type} • ${(file.size / 1024).toFixed(1)} KB`;
+        document.getElementById("imagePreviewBar").classList.add("visible");
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function removeAttachedImage() {
+      attachedImageBase64 = null;
+      attachedImageMime = null;
+      const fileInput = document.getElementById("imageFileInput");
+      if (fileInput) fileInput.value = "";
+      document.getElementById("imagePreviewBar").classList.remove("visible");
+    }
 
     async function checkStatus() {
       try {
@@ -778,7 +1020,7 @@
     async function runAgent() {
       if (isRunning) return;
       const prompt = document.getElementById("promptInput").value.trim();
-      if (!prompt) return;
+      if (!prompt && !attachedImageBase64) return;
 
       isRunning = true;
       const runBtn = document.getElementById("runBtn");
@@ -790,10 +1032,16 @@
       container.innerHTML = "";
 
       try {
+        const payload = { prompt };
+        if (attachedImageBase64) {
+          payload.image_base64 = attachedImageBase64;
+          payload.image_mime = attachedImageMime;
+        }
+
         const res = await fetch("/api/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify(payload),
         });
 
         const result = await res.json();
@@ -841,7 +1089,19 @@
         const t = item.type;
         const d = item.data;
 
-        if (t === "plan") {
+        if (t === "start" && d.has_image) {
+          const card = document.createElement("div");
+          card.className = "step-card";
+          card.style.borderColor = "#38bdf8";
+          card.innerHTML = `
+            <div class="step-head" style="background: #082f49;">
+              <span class="tag" style="background: #0284c7; color: #fff;">MULTIMODAL</span>
+              <span>Input Photo Attached & Ingested</span>
+            </div>
+            <div class="step-body">Photo successfully decoded and passed to Gemini Vision Engine. Inspecting visual features, dimensions, or components...</div>
+          `;
+          container.appendChild(card);
+        } else if (t === "plan") {
           const card = document.createElement("div");
           card.className = "step-card";
           card.innerHTML = `
@@ -949,6 +1209,14 @@
 
     function closeModal() {
       document.getElementById("fileModal").classList.remove("open");
+    }
+
+    function openComparisonModal() {
+      document.getElementById("comparisonModal").classList.add("open");
+    }
+
+    function closeComparisonModal() {
+      document.getElementById("comparisonModal").classList.remove("open");
     }
 
     function escapeHtml(str) {

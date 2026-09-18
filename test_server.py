@@ -32,7 +32,7 @@ def test_server_status_endpoint(live_server):
     assert resp.status_code == 200
     data = resp.json()
     assert "tools" in data
-    assert len(data["tools"]) == 4
+    assert len(data["tools"]) == 6
 
 
 def test_server_files_endpoint(live_server):
@@ -41,3 +41,17 @@ def test_server_files_endpoint(live_server):
     data = resp.json()
     assert "files" in data
     assert isinstance(data["files"], list)
+
+
+def test_server_run_validation(live_server):
+    # Empty prompt and no image returns 400
+    resp = requests.post(f"{live_server}/api/run", json={"prompt": ""})
+    assert resp.status_code == 400
+
+    # Invalid image base64 returns 400
+    resp_invalid = requests.post(
+        f"{live_server}/api/run",
+        json={"prompt": "test", "image_base64": "!!!not-valid-base64!!!"}
+    )
+    assert resp_invalid.status_code == 400
+

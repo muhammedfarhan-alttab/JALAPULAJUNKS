@@ -10,7 +10,7 @@ using the native Google GenAI SDK solely for raw LLM inference.
 import os
 import sys
 import time
-from typing import Callable, Dict, List, Any
+from typing import Callable, Dict, List, Any, Optional
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -37,7 +37,7 @@ class CustomAgentBrain:
     def __init__(
         self,
         api_key: str = None,
-        model_name: str = "gemini-3.6-flash",
+        model_name: str = "gemini-3.1-flash-lite",
         max_steps: int = 8,
     ):
         key = api_key or os.environ.get("GEMINI_API_KEY")
@@ -60,7 +60,13 @@ class CustomAgentBrain:
         for f in funcs:
             self.register_tool(f)
 
-    def run(self, user_prompt: str, step_callback: Callable[[str, Dict[str, Any]], None] = None) -> str:
+    def run(
+        self,
+        user_prompt: str,
+        image_bytes: Optional[bytes] = None,
+        image_mime: Optional[str] = None,
+        step_callback: Callable[[str, Dict[str, Any]], None] = None
+    ) -> str:
         """
         Executes the Core Agent Loop:
           1. PLAN: Send history + tool schemas to Gemini.
@@ -70,6 +76,8 @@ class CustomAgentBrain:
           
         Args:
             user_prompt: The goal or instruction for the agent.
+            image_bytes: Optional raw image bytes for multimodal input.
+            image_mime: Optional MIME type for image (e.g. 'image/png', 'image/jpeg').
             step_callback: Optional callable for streaming steps to a web UI.
         """
         def emit(event_type: str, data: Dict[str, Any]):
@@ -82,15 +90,20 @@ class CustomAgentBrain:
         print("\n" + "=" * 65)
         print("🚀 [AGENT STARTED] Solving Goal:")
         print(f"   \"{user_prompt}\"")
+        if image_bytes:
+            print(f"   📷 [MULTIMODAL ATTACHMENT]: {len(image_bytes)} bytes ({image_mime or 'image/jpeg'})")
         print("=" * 65)
 
-        emit("start", {"prompt": user_prompt})
+        emit("start", {"prompt": user_prompt, "has_image": bool(image_bytes)})
 
         # System instructions guiding the agent's behavior
         system_instruction = (
             "You are an autonomous problem-solving AI agent. "
             "You have access to a suite of tools to retrieve data, perform calculations, "
-            "and save files.\n"
+            "save files, and generate Autodesk Fusion 360 3D CAD scripts and LTspice circuit netlists.\n"
+            "If the user provides an image (such as a photo of a physical part, dimension drawing, or circuit diagram), "
+            "carefully inspect its visual features, geometry, or electronic components, and use the appropriate engineering tool "
+            "(generate_fusion360_cad or generate_ltspice_circuit) to model it accurately.\n"
             "RULES:\n"
             "1. Dynamically select the best tool for each step. Never guess what you can verify with a tool.\n"
             "2. IF A TOOL CALL FAILS or returns an error: Do NOT give up or crash! Observe the error message, "
@@ -110,11 +123,17 @@ class CustomAgentBrain:
             temperature=0.2,
         )
 
-        # Initialize conversation history with the user's prompt
+        # Initialize conversation history with the user's prompt and optional image
+        user_parts = []
+        if image_bytes:
+            mime = image_mime or "image/jpeg"
+            user_parts.append(types.Part.from_bytes(data=image_bytes, mime_type=mime))
+        user_parts.append(types.Part.from_text(text=user_prompt))
+
         history: List[types.Content] = [
             types.Content(
                 role="user",
-                parts=[types.Part.from_text(text=user_prompt)],
+                parts=user_parts,
             )
         ]
 
@@ -128,11 +147,12 @@ class CustomAgentBrain:
             emit("plan", {"step": step_counter, "message": "Analyzing context and planning next action..."})
 
             # Resilient API communication: Auto-retries on transient 503/429 spikes
-            # and automatically fails over to alternative flash models if needed
+            # and automatically fails over to alternative flash-lite models if needed
             response = None
-            candidate_models = [self.model_name, "gemini-3.5-flash", "gemini-flash-latest"]
+            candidate_models = [self.model_name, "gemini-3.5-flash-lite"]
             last_err = None
 
+            is_offline = False
             for model_candidate in candidate_models:
                 for attempt in range(3):
                     try:
@@ -144,22 +164,42 @@ class CustomAgentBrain:
                         break
                     except Exception as api_err:
                         last_err = api_err
-                        err_msg = str(api_err)
-                        if "503" in err_msg or "429" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
+                        err_msg = str(api_err).lower()
+                        if "getaddrinfo failed" in err_msg or "nodename nor servname provided" in err_msg:
+                            # Machine is offline / DNS failed. Try once more quickly, then stop.
+                            is_offline = True
+                            if attempt == 0:
+                                time.sleep(1.5)
+                                continue
+                            break
+
+                        is_transient = any(k in err_msg for k in [
+                            "503", "429", "unavailable", "high demand", 
+                            "timeout", "connecterror"
+                        ])
+                        if is_transient:
                             wait_sec = 1.5 * (attempt + 1)
-                            print(f"⏳ [DEMAND SPIKE] Model '{model_candidate}' 503/429. Retrying in {wait_sec}s...")
+                            print(f"⏳ [CAPACITY RETRY] Model '{model_candidate}' busy. Retrying in {wait_sec}s...")
                             time.sleep(wait_sec)
                             continue
                         else:
-                            # Not a temporary capacity error, try next candidate or abort
                             break
-                if response is not None:
+                if response is not None or is_offline:
                     break
 
             if response is None:
-                print(f"❌ [API ERROR] All models unavailable: {last_err}")
-                emit("error", {"message": f"API Error: {str(last_err)}"})
-                return f"Agent stopped due to API Error: {last_err}"
+                err_text = str(last_err)
+                if "getaddrinfo failed" in err_text.lower():
+                    friendly_msg = (
+                        "Internet Disconnected: Your computer cannot reach Google servers. "
+                        "Please verify your Wi-Fi or internet connection and try again."
+                    )
+                else:
+                    friendly_msg = f"API Error: {err_text}"
+
+                print(f"❌ [API ERROR] All attempts failed: {friendly_msg}")
+                emit("error", {"message": friendly_msg})
+                return f"Agent stopped: {friendly_msg}"
 
             candidate = response.candidates[0]
             model_content = candidate.content

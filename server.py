@@ -6,8 +6,10 @@ Provides:
   - REST endpoints to run agent tasks, inspect steps, view saved files, and manage API key
 """
 
+import base64
 import json
 import os
+import subprocess
 import sys
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -29,6 +31,8 @@ from tools import (
     calculate_currency_or_math,
     save_report_file,
     unreliable_live_rates,
+    generate_fusion360_cad,
+    generate_ltspice_circuit,
     TOOL_REGISTRY,
 )
 
@@ -62,6 +66,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                     content = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
                 self.send_cors_headers()
                 self.end_headers()
                 self.wfile.write(content)
@@ -92,20 +97,27 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                         "name": "unreliable_live_rates",
                         "desc": "The Troublemaker (Simulates 503 outage to test recovery)",
                     },
+                    {
+                        "name": "generate_fusion360_cad",
+                        "desc": "Autodesk Fusion 360 3D parametric CAD script generator",
+                    },
+                    {
+                        "name": "generate_ltspice_circuit",
+                        "desc": "LTspice schematic & simulation netlist generator",
+                    },
                 ],
             }
             self.send_json(data)
             return
 
         if path == "/api/files":
-            # List user files created in directory (.txt, .md, .csv)
-            # Ignore project code files
-            ignored = {"README.md", "bonus_comparison.md"}
+            # List user files created in directory (.txt, .md, .csv, .cir, .net, and CAD .py)
+            ignored = {"README.md", "bonus_comparison.md", "server.py", "agent_brain.py", "main.py", "tools.py", "test_framework.py", "test_server.py"}
             files = []
             for fname in os.listdir(BASE_DIR):
                 if fname in ignored or fname.startswith("."):
                     continue
-                if fname.endswith((".txt", ".md", ".csv", ".json", ".log")):
+                if fname.endswith((".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", "_fusion.py")):
                     fpath = os.path.join(BASE_DIR, fname)
                     if os.path.isfile(fpath):
                         stat = os.stat(fpath)
@@ -149,6 +161,25 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Invalid JSON"}, status=400)
             return
 
+        if path == "/api/open":
+            filename = payload.get("filename", "").strip()
+            safe_name = os.path.basename(filename)
+            file_path = os.path.join(BASE_DIR, safe_name)
+            if not os.path.exists(file_path):
+                self.send_json({"error": f"File '{safe_name}' not found"}, status=404)
+                return
+
+            ltspice_exe = r"C:\Users\Muhammed Farhan\AppData\Local\Programs\LTspice.exe"
+            try:
+                if safe_name.endswith((".asc", ".cir", ".net")) and os.path.exists(ltspice_exe):
+                    subprocess.Popen([ltspice_exe, file_path])
+                else:
+                    os.startfile(file_path)
+                self.send_json({"success": True, "message": f"Opened {safe_name}"})
+            except Exception as e:
+                self.send_json({"error": str(e)}, status=500)
+            return
+
         if path == "/api/key":
             key = payload.get("api_key", "").strip()
             if not key:
@@ -163,9 +194,25 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/run":
             prompt = payload.get("prompt", "").strip()
-            if not prompt:
-                self.send_json({"error": "Prompt cannot be empty"}, status=400)
+            image_base64 = payload.get("image_base64")
+            image_mime = payload.get("image_mime", "image/jpeg")
+
+            if not prompt and not image_base64:
+                self.send_json({"error": "Please provide a prompt or attach an image."}, status=400)
                 return
+
+            image_bytes = None
+            if image_base64:
+                try:
+                    if "," in image_base64:
+                        header, data_part = image_base64.split(",", 1)
+                        if "image/" in header:
+                            image_mime = header.split(";")[0].replace("data:", "")
+                        image_base64 = data_part
+                    image_bytes = base64.b64decode(image_base64)
+                except Exception as b64_err:
+                    self.send_json({"error": f"Invalid image encoding: {str(b64_err)}"}, status=400)
+                    return
 
             api_key = os.environ.get("GEMINI_API_KEY")
             if not api_key:
@@ -189,8 +236,16 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                     calculate_currency_or_math,
                     save_report_file,
                     unreliable_live_rates,
+                    generate_fusion360_cad,
+                    generate_ltspice_circuit,
                 ])
-                final_answer = agent.run(prompt, step_callback=on_step)
+                effective_prompt = prompt or "Analyze this image and model or simulate it using the appropriate engineering tools."
+                final_answer = agent.run(
+                    effective_prompt,
+                    image_bytes=image_bytes,
+                    image_mime=image_mime,
+                    step_callback=on_step
+                )
                 self.send_json({
                     "success": True,
                     "steps": collected_steps,
@@ -210,6 +265,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         body = json.dumps(data).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.send_cors_headers()
         self.end_headers()
         self.wfile.write(body)

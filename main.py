@@ -28,6 +28,8 @@ from tools import (
     calculate_currency_or_math,
     save_report_file,
     unreliable_live_rates,
+    generate_fusion360_cad,
+    generate_ltspice_circuit,
 )
 
 
@@ -54,12 +56,14 @@ def get_agent() -> CustomAgentBrain:
     # Initialize our from-scratch agent brain
     agent = CustomAgentBrain(api_key=api_key)
 
-    # Register all 4 tools dynamically
+    # Register all 6 tools dynamically
     agent.register_tools([
         get_live_weather,
         calculate_currency_or_math,
         save_report_file,
         unreliable_live_rates,
+        generate_fusion360_cad,
+        generate_ltspice_circuit,
     ])
 
     return agent

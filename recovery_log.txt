@@ -1,15 +1,4 @@
-# Incident & Recovery Log
-
-## Summary of Incident
-- **Target Currency Pair:** USD/EUR
-- **Attempted Tool:** `unreliable_live_rates`
-- **Status:** Failed
-- **Error Details:** `HTTP 503 Service Unavailable: Gateway for currency pair 'USD/EUR' timed out. The live banking API is temporarily down.`
-
-## Recovery Action Taken
-- **Fallback Action:** Switched to calculation using `calculate_currency_or_math`.
-- **Expression Evaluated:** `500 * 0.92`
-- **Result:** `460.0`
-
-## Conclusion
-The live banking API gateway experienced a timeout (503 Service Unavailable). Fallback currency calculation was performed successfully.
+Incident Report:
+The attempt to fetch the live exchange rate for USD/EUR using 'unreliable_live_rates' failed with an HTTP 503 error (Service Unavailable).
+Following the recovery protocol, the calculation '500 * 0.92' was performed using 'calculate_currency_or_math'.
+The result of the calculation is 460.0.
