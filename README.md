@@ -62,13 +62,13 @@ To maintain **100% technical honesty** during hackathon demonstrations:
 
 ## 🛡️ Built-In Framework Guardrails
 
-1. **Explicit Control Boundary**: The Gemini model *never* executes Python code directly. It can only propose a tool call. Our Python loop checks registration, verifies arguments via `inspect.signature()`, and executes within a `try/except` sandbox.
+1. **Explicit Control Boundary**: The Gemini model *never* executes Python code directly. It can only propose a tool call. Our Python loop checks registration, verifies arguments via `inspect.signature()`, rejects non-dict payloads and parameter type mismatches, and executes within a `try/except` sandbox.
 2. **Structured Observations**: Every tool turn returns a structured dictionary (`tool`, `success: bool`, `result` or `error_type`, `error`, `recovery_hint`) so Gemini can reason and self-correct on failure.
-3. **AST-Based Math Sandboxing**: Mathematical expressions are parsed into an Abstract Syntax Tree (AST) restricting execution to numbers and arithmetic operators (`+`, `-`, `*`, `/`, `**`, `sqrt`) and safe reference rate variables. Python object traversal (`.__class__`) is strictly blocked.
-4. **Path Sanitization**: `os.path.basename` prevents directory traversal (`../../`), confining generated files to `output/`.
-5. **Secret Redaction**: Error observations automatically strip API keys and sensitive tokens before transmitting state back to the model.
-6. **Step Limit**: Default `max_steps = 10` prevents runaway infinite reasoning loops.
-7. **Resilient API Retry**: 3-attempt exponential backoff on transient 503/429 spikes with automatic model fallback to `gemini-3.5-flash-lite`.
+3. **AST-Based Math Sandboxing**: Mathematical expressions are parsed into an Abstract Syntax Tree (AST) restricting execution to numbers, arithmetic operators (`+`, `-`, `*`, `/`, `**`, `sqrt`), and safe reference rate variables. Python object traversal (`.__class__`) and code execution are strictly blocked.
+4. **Path & File Safety**: `_validate_safe_filename` strictly rejects directory traversal (`../`), absolute paths, reserved OS system names (`CON`, `PRN`), hidden config files (`.env`, `.git`), and dangerous executable extensions (`.exe`, `.bat`, `.ps1`), confining all output strictly within the `output/` directory.
+5. **Secret & Path Scrubbing**: Error observations automatically redact API keys, sensitive environment tokens (`KEY`, `TOKEN`, `SECRET`, `AUTH`), user home directories, and local filesystem paths before transmitting state back to the model or logs.
+6. **Step Limit**: Strict `max_steps` bounds check (default: 10) prevents runaway infinite reasoning loops.
+7. **Bounded HTTP Retries & Timeouts**: Real HTTP requests implement 5.0-second timeouts and max 2 retries for transient status codes (429, 500, 502, 503, 504), while intentionally leaving simulated tools (`unreliable_live_rates`) free of retries to demonstrate transparent agent recovery.
 
 ## 🚀 Quick Start Guide
 

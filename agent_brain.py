@@ -9,6 +9,7 @@ using the native Google GenAI SDK solely for raw LLM inference.
 
 import inspect
 import os
+import re
 import sys
 import time
 from typing import Callable, Dict, List, Any, Optional
@@ -38,9 +39,13 @@ class CustomAgentBrain:
     def __init__(
         self,
         api_key: str = None,
-        model_name: str = "gemini-3.1-flash-lite",
+        model_name: str = "gemini-2.5-flash",
         max_steps: int = 10,
+        fallback_model: Optional[str] = None,
     ):
+        if max_steps is not None and max_steps <= 0:
+            raise ValueError(f"max_steps must be a positive integer, received: {max_steps}")
+
         key = api_key or os.environ.get("GEMINI_API_KEY")
         if not key:
             raise ValueError(
@@ -51,6 +56,7 @@ class CustomAgentBrain:
         self.client = genai.Client(api_key=key)
         self.model_name = model_name
         self.max_steps = max_steps
+        self.fallback_model = fallback_model
         self.tool_functions: Dict[str, Callable] = {}
 
     def register_tool(self, func: Callable):
@@ -62,17 +68,80 @@ class CustomAgentBrain:
         for f in funcs:
             self.register_tool(f)
 
-    def _validate_arguments(self, func: Callable, args: dict) -> Optional[str]:
+    def _validate_arguments(self, func: Callable, args: Any) -> Optional[str]:
         """
         Guardrail: Validates that arguments match the function signature BEFORE execution.
-        Prevents executing calls with missing required arguments or unexpected parameters.
+        Rejects:
+          - Non-dict argument payloads
+          - Missing required arguments
+          - Unexpected keyword arguments
+          - Type mismatches for annotated parameters (e.g. str, dict, int, float)
         """
+        if not isinstance(args, dict):
+            return f"Arguments must be provided as a key-value dictionary, received {type(args).__name__}."
+
         try:
             sig = inspect.signature(func)
-            sig.bind(**args)
+            bound = sig.bind(**args)
+            bound.apply_defaults()
+
+            for param_name, param_value in bound.arguments.items():
+                param = sig.parameters.get(param_name)
+                if param and param.annotation != inspect.Parameter.empty:
+                    expected_type = param.annotation
+                    if isinstance(expected_type, type):
+                        if expected_type is float:
+                            if not isinstance(param_value, (int, float)) or isinstance(param_value, bool):
+                                return f"Parameter '{param_name}' must be of type float or int, received {type(param_value).__name__}."
+                        elif expected_type is int:
+                            if not isinstance(param_value, int) or isinstance(param_value, bool):
+                                return f"Parameter '{param_name}' must be of type int, received {type(param_value).__name__}."
+                        elif expected_type is dict:
+                            if not isinstance(param_value, dict):
+                                return f"Parameter '{param_name}' must be of type dict, received {type(param_value).__name__}."
+                        elif expected_type is str:
+                            if not isinstance(param_value, str):
+                                return f"Parameter '{param_name}' must be of type str, received {type(param_value).__name__}."
+
             return None
         except TypeError as te:
             return str(te)
+
+    def _sanitize_error_message(self, text: str) -> str:
+        """
+        Guardrail: Sanitizes error messages before returning them in structured observations or logs.
+        Scrubs:
+          - Active API keys
+          - Sensitive environment variable tokens (passwords, secrets, keys, credentials)
+          - Full local filesystem paths and user directory layouts
+          - Tracebacks and internal file paths
+        """
+        if not text:
+            return ""
+
+        sanitized = str(text)
+
+        # 1. Redact API key
+        if self.api_key and self.api_key in sanitized:
+            sanitized = sanitized.replace(self.api_key, "[REDACTED_API_KEY]")
+
+        # 2. Redact sensitive environment variables (tokens >= 6 chars)
+        secret_keys = ("KEY", "TOKEN", "SECRET", "PASS", "AUTH", "CREDENTIAL", "PRIVATE")
+        for env_k, env_v in os.environ.items():
+            if any(s in env_k.upper() for s in secret_keys):
+                if env_v and len(env_v) >= 6 and env_v in sanitized:
+                    sanitized = sanitized.replace(env_v, f"[REDACTED_{env_k}]")
+
+        # 3. Redact local user directory layout (e.g. C:\\Users\\Username\\... or /home/username/...)
+        user_home = os.path.expanduser("~")
+        if user_home and user_home in sanitized:
+            sanitized = sanitized.replace(user_home, "[USER_HOME]")
+
+        # 4. Replace Windows and Unix absolute paths with generic markers
+        sanitized = re.sub(r"[A-Za-z]:\\[^:\n\r\t\"\'<>]+", "[LOCAL_PATH]", sanitized)
+        sanitized = re.sub(r"/(?:home|usr|etc|var|tmp)/[^\s:\n\r\t\"\'<>]+", "[SYSTEM_PATH]", sanitized)
+
+        return sanitized
 
     def run(
         self,
@@ -166,9 +235,10 @@ class CustomAgentBrain:
             emit("plan", {"step": step_counter, "message": "Analyzing context and planning next action..."})
 
             # Resilient API communication: Auto-retries on transient 503/429 spikes
-            # and automatically fails over to alternative flash-lite models if needed
             response = None
-            candidate_models = [self.model_name, "gemini-3.5-flash-lite"]
+            candidate_models = [self.model_name]
+            if self.fallback_model:
+                candidate_models.append(self.fallback_model)
             last_err = None
 
             is_offline = False
@@ -250,30 +320,33 @@ class CustomAgentBrain:
 
                 # Explicit Control Boundary 1: Verify tool is registered in Python framework
                 if func_name not in self.tool_functions:
+                    raw_err = f"Tool '{func_name}' is not registered in framework. Available tools: {list(self.tool_functions.keys())}"
+                    sanitized_err = self._sanitize_error_message(raw_err)
                     observation_payload = {
                         "tool": func_name,
                         "success": False,
                         "error_type": "ToolNotFoundError",
-                        "error": f"Tool '{func_name}' is not registered in framework. Available tools: {list(self.tool_functions.keys())}",
+                        "error": sanitized_err,
                         "recovery_hint": "Please select from the available tools registered in the framework."
                     }
                     print(f"⚠️  [STEP {step_counter}: ERROR] Tool '{func_name}' does not exist.")
                     print(f"♻️  [STEP {step_counter}: RECOVERY] Feeding structured error back to Gemini for autonomous self-correction...")
-                    emit("observe_error", {"step": step_counter, "tool": func_name, "error": observation_payload["error"]})
+                    emit("observe_error", {"step": step_counter, "tool": func_name, "error": sanitized_err})
                 else:
                     tool_fn = self.tool_functions[func_name]
                     # Explicit Control Boundary 2: Validate arguments against Python signature before execution
                     validation_error = self._validate_arguments(tool_fn, func_args)
                     if validation_error:
                         sig = inspect.signature(tool_fn)
+                        sanitized_val_err = self._sanitize_error_message(validation_error)
                         observation_payload = {
                             "tool": func_name,
                             "success": False,
                             "error_type": "ArgumentValidationError",
-                            "error": f"Invalid arguments for '{func_name}': {validation_error}",
+                            "error": f"Invalid arguments for '{func_name}': {sanitized_val_err}",
                             "recovery_hint": f"Expected parameters for '{func_name}': {list(sig.parameters.keys())}. Please fix the arguments."
                         }
-                        print(f"⚠️  [STEP {step_counter}: ERROR] Argument validation failed for '{func_name}': {validation_error}")
+                        print(f"⚠️  [STEP {step_counter}: ERROR] Argument validation failed for '{func_name}': {sanitized_val_err}")
                         print(f"♻️  [STEP {step_counter}: RECOVERY] Feeding structured error back to Gemini for autonomous self-correction...")
                         emit("observe_error", {"step": step_counter, "tool": func_name, "error": observation_payload["error"]})
                     else:
@@ -290,9 +363,7 @@ class CustomAgentBrain:
                             emit("observe_success", {"step": step_counter, "tool": func_name, "result": str(raw_result)})
                         except Exception as tool_exc:
                             # ERROR RECOVERY: Intercept exception, sanitize secrets, package structured observation
-                            safe_err_msg = str(tool_exc)
-                            if self.api_key and self.api_key in safe_err_msg:
-                                safe_err_msg = safe_err_msg.replace(self.api_key, "[REDACTED_API_KEY]")
+                            safe_err_msg = self._sanitize_error_message(str(tool_exc))
                             observation_payload = {
                                 "tool": func_name,
                                 "success": False,

@@ -35,6 +35,7 @@ from tools import (
     generate_ltspice_circuit,
     search_web_for_circuit_or_model,
     TOOL_REGISTRY,
+    _validate_safe_filename,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -140,7 +141,15 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/file":
             qs = urllib.parse.parse_qs(parsed.query)
             filename = qs.get("name", [""])[0]
-            safe_name = os.path.basename(filename)
+            try:
+                safe_name = _validate_safe_filename(
+                    filename,
+                    allowed_extensions={".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", ".py"}
+                )
+            except Exception as val_err:
+                self.send_json({"error": f"Invalid filename: {val_err}"}, status=400)
+                return
+
             file_path = os.path.join(OUTPUT_DIR, safe_name)
             if not (os.path.exists(file_path) and os.path.isfile(file_path)):
                 file_path = os.path.join(BASE_DIR, safe_name)
@@ -180,7 +189,15 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/open":
             filename = payload.get("filename", "").strip()
-            safe_name = os.path.basename(filename)
+            try:
+                safe_name = _validate_safe_filename(
+                    filename,
+                    allowed_extensions={".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", ".py"}
+                )
+            except Exception as val_err:
+                self.send_json({"error": f"Invalid filename: {val_err}"}, status=400)
+                return
+
             file_path = os.path.join(OUTPUT_DIR, safe_name)
             if not os.path.exists(file_path):
                 file_path = os.path.join(BASE_DIR, safe_name)

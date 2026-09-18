@@ -12,6 +12,8 @@ import math
 import operator as op
 import os
 import re
+import time
+from typing import Optional, Set
 import urllib.parse
 import urllib.request
 import requests
@@ -19,6 +21,109 @@ import requests
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Guardrail: Forbidden dangerous executable extensions
+DANGEROUS_EXTENSIONS = {
+    ".exe", ".bat", ".cmd", ".sh", ".ps1", ".vbs", ".dll", ".so",
+    ".dylib", ".msi", ".com", ".pif", ".scr", ".jar", ".bin"
+}
+
+# Guardrail: Forbidden OS device reserved names
+RESERVED_SYSTEM_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+}
+
+
+def _validate_safe_filename(filename: str, allowed_extensions: Optional[Set[str]] = None) -> str:
+    """
+    Guardrail: Validates and sanitizes a filename for safe file storage in 'output/'.
+    
+    Enforces:
+      - Strict rejection of directory traversal ('..', '/', '\\')
+      - Strict rejection of absolute paths (e.g. 'C:\\', '/etc/')
+      - Strict rejection of dangerous executable extensions (.exe, .bat, .cmd, .sh, .ps1, etc.)
+      - Rejection of hidden and configuration files ('.env', '.git', etc.)
+      - Rejection of reserved operating system device names (CON, PRN, AUX, NUL, etc.)
+      - Confinement strictly within the designated project 'output/' folder.
+    """
+    if not filename or not isinstance(filename, str):
+        raise ValueError("Filename must be a non-empty string.")
+
+    raw_name = filename.strip()
+
+    # Reject directory traversal attempts
+    if ".." in raw_name:
+        raise ValueError(
+            f"Security Violation: Dangerous path '{filename}' contains directory traversal ('..'). "
+            "All output files must be confined strictly to the 'output/' directory."
+        )
+
+    # Sanitize to clean basename
+    clean_name = os.path.basename(raw_name.replace("/", os.sep).replace("\\", os.sep))
+    if not clean_name:
+        raise ValueError(f"Security Violation: Invalid filename '{filename}'.")
+
+    # Check for illegal filesystem characters in the basename
+    if re.search(r'[<>:"/\\|?*\x00-\x1f]', clean_name):
+        raise ValueError(f"Security Violation: Filename '{filename}' contains invalid or unsafe characters.")
+
+    root, ext = os.path.splitext(clean_name)
+    if root.upper() in RESERVED_SYSTEM_NAMES:
+        raise ValueError(f"Security Violation: Filename '{clean_name}' uses a reserved OS system name.")
+
+    # Reject hidden or sensitive credential / configuration files
+    if clean_name.startswith(".") or clean_name.lower() in (".env", ".gitignore", ".git", "credentials", "id_rsa"):
+        raise ValueError(f"Security Violation: Access to hidden or sensitive configuration file '{clean_name}' is forbidden.")
+
+    ext_lower = ext.lower()
+    if ext_lower in DANGEROUS_EXTENSIONS:
+        raise ValueError(f"Security Violation: Executable extension '{ext}' is forbidden.")
+
+    if allowed_extensions and ext_lower not in allowed_extensions:
+        raise ValueError(
+            f"Invalid file extension '{ext}'. Permitted extensions: {', '.join(sorted(allowed_extensions))}"
+        )
+
+    # Verify target path resolves strictly inside OUTPUT_DIR
+    target_abs = os.path.abspath(os.path.join(OUTPUT_DIR, clean_name))
+    output_dir_abs = os.path.abspath(OUTPUT_DIR)
+    if not target_abs.startswith(output_dir_abs):
+        raise ValueError("Security Violation: File path resolves outside the safe 'output/' folder.")
+
+    return clean_name
+
+
+def _robust_http_get(
+    url: str,
+    headers: dict = None,
+    timeout: float = 5.0,
+    max_retries: int = 2
+) -> Optional[requests.Response]:
+    """
+    Guardrail: Executes an HTTP GET request with explicit timeouts and bounded retries.
+    
+    Retries transient server and network errors (429, 500, 502, 503, 504, Timeouts).
+    Does NOT retry permanent client errors (400, 401, 403, 404).
+    Uses a small, strictly bounded retry count (default max 2 retries).
+    """
+    last_resp = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code in (429, 500, 502, 503, 504):
+                last_resp = resp
+                if attempt < max_retries:
+                    time.sleep(0.3 * (attempt + 1))
+                    continue
+            return resp
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.RequestException):
+            if attempt < max_retries:
+                time.sleep(0.3 * (attempt + 1))
+                continue
+            return None
+    return last_resp
 
 
 def get_live_weather(city: str) -> str:
@@ -31,11 +136,14 @@ def get_live_weather(city: str) -> str:
     Returns:
         A formatted string with temperature, condition, and humidity.
     """
+    clean_city = str(city).strip()
+    if not clean_city:
+        raise ValueError("City name cannot be empty.")
     try:
-        # Use wttr.in JSON API (free, open, no API key required)
-        url = f"https://wttr.in/{city}?format=j1"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
+        # Use wttr.in JSON API with bounded retry and explicit 5.0s timeout
+        url = f"https://wttr.in/{urllib.parse.quote(clean_city)}?format=j1"
+        resp = _robust_http_get(url, timeout=5.0, max_retries=2)
+        if resp is not None and resp.status_code == 200:
             data = resp.json()
             current = data["current_condition"][0]
             temp_c = current.get("temp_C", "N/A")
@@ -43,10 +151,10 @@ def get_live_weather(city: str) -> str:
             humidity = current.get("humidity", "N/A")
             wind = current.get("windspeedKmph", "N/A")
             return (
-                f"Weather in {city}: {temp_c}°C, {desc}. "
+                f"Weather in {clean_city}: {temp_c}°C, {desc}. "
                 f"Humidity: {humidity}%, Wind speed: {wind} km/h."
             )
-    except Exception as e:
+    except Exception:
         # Graceful fallback if internet is unavailable or wttr is busy
         pass
 
@@ -57,8 +165,8 @@ def get_live_weather(city: str) -> str:
         "new york": "15°C, Sunny, Humidity: 45%, Wind: 10 km/h",
         "paris": "16°C, Mild, Humidity: 60%, Wind: 14 km/h",
     }
-    cleaned = city.strip().lower()
-    return f"Weather in {city}: " + mock_data.get(cleaned, "20°C, Clear Sky, Humidity: 50%, Wind: 10 km/h")
+    cleaned = clean_city.lower()
+    return f"Weather in {clean_city}: " + mock_data.get(cleaned, "20°C, Clear Sky, Humidity: 50%, Wind: 10 km/h")
 
 
 # Clearly documented static fallback/reference benchmark rates
@@ -237,6 +345,11 @@ def save_report_file(filename: str, content: str) -> str:
     """
     Saves a report or notes to a file in the project 'output/' folder.
     
+    Guardrails:
+      - Validates filename against path traversal ('..', '/', '\\'), absolute paths, and dangerous extensions.
+      - Restricts all writes strictly to the dedicated 'output/' folder.
+      - Enforces content type safety.
+    
     Args:
         filename: Name of the file to save (e.g. 'tokyo_plan.txt', 'summary.md').
         content: The text content of the report to write into the file.
@@ -244,8 +357,13 @@ def save_report_file(filename: str, content: str) -> str:
     Returns:
         A confirmation message indicating success and file location.
     """
-    # Sanitize filename to avoid path traversal and store inside output/ folder
-    safe_name = os.path.basename(filename)
+    if not isinstance(content, str):
+        raise ValueError(f"Content must be a string, received {type(content).__name__}")
+
+    safe_name = _validate_safe_filename(
+        filename,
+        allowed_extensions={".txt", ".md", ".json", ".csv", ".log", ".summary"}
+    )
     target_path = os.path.join(OUTPUT_DIR, safe_name)
     try:
         with open(target_path, "w", encoding="utf-8") as f:
@@ -334,7 +452,9 @@ def generate_fusion360_cad(component_type: str, parameters: dict, filename: str 
     
     # 1. Validation & Geometric Verification (Enables agent error recovery if bad specs given)
     for dim_name, val in parameters.items():
-        if isinstance(val, (int, float)) and val <= 0:
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            raise ValueError(f"Security/Type Error: CAD parameter '{dim_name}' must be a numeric float or int, received {type(val).__name__}.")
+        if val <= 0:
             raise ValueError(f"CAD Parameter Error: '{dim_name}' must be positive, received {val} mm.")
 
     if comp in ("mounting_bracket", "bracket", "plate"):
@@ -502,7 +622,7 @@ def run(context):
 """
 
     out_name = filename or f"{comp}_fusion.py"
-    safe_name = os.path.basename(out_name)
+    safe_name = _validate_safe_filename(out_name, allowed_extensions={".py"})
     target_path = os.path.join(OUTPUT_DIR, safe_name)
     with open(target_path, "w", encoding="utf-8") as f:
         f.write(cad_script)
@@ -531,7 +651,15 @@ def generate_ltspice_circuit(circuit_name: str, circuit_type: str, specs: dict, 
         Confirmation string with circuit calculations and saved SPICE netlist path.
     """
     if not isinstance(specs, dict):
-        raise ValueError(f"Specs must be a dictionary, received {type(specs)}")
+        raise ValueError(f"Specs must be a dictionary, received {type(specs).__name__}")
+
+    for k, v in specs.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"Security/Type Error: Circuit spec '{k}' must be a numeric float or int, received {type(v).__name__}.")
+        if v <= 0 and k not in ("gain",):
+            if k == "cutoff_hz":
+                raise ValueError(f"Circuit Parameter Error: Cutoff frequency must be > 0 Hz, received {v}")
+            raise ValueError(f"Circuit Parameter Error: Circuit spec '{k}' must be positive, received {v}")
 
     ctype = circuit_type.strip().lower().replace(" ", "_")
     calc_summary = []
@@ -734,8 +862,8 @@ TEXT 64 390 Left 2 !.tran 0 3m 0 1u
 
     base = circuit_name.lower().replace(" ", "_")
     if filename:
-        clean = os.path.basename(filename)
-        root, ext = os.path.splitext(clean)
+        clean_name = _validate_safe_filename(filename, allowed_extensions={".cir", ".net", ".asc"})
+        root, ext = os.path.splitext(clean_name)
         asc_name = f"{root}.asc"
         cir_name = f"{root}.cir"
     else:
@@ -784,37 +912,43 @@ def search_web_for_circuit_or_model(query: str, visual_features: str = "") -> st
 
     snippets = []
 
-    # 1. Primary Engine: DuckDuckGo HTML Web Search
-    try:
-        data = urllib.parse.urlencode({"q": clean_query}).encode("utf-8")
-        req = urllib.request.Request("https://html.duckduckgo.com/html/", data=data, headers=headers)
-        with urllib.request.urlopen(req, timeout=6) as response:
-            html = response.read().decode("utf-8", errors="ignore")
-            raw_snippets = re.findall(r'class=[\'"]result__snippet[\'"][^>]*>(.*?)</a>', html, re.DOTALL)
-            for s in raw_snippets[:5]:
-                clean_s = re.sub(r'<[^>]+>', '', s).strip()
-                if clean_s and len(clean_s) > 20:
-                    snippets.append(clean_s)
-    except Exception:
-        pass
-
-    # 2. Secondary Engine: Wikipedia REST API for electrical/mechanical definitions
-    if len(snippets) < 2:
+    # 1. Primary Engine: DuckDuckGo HTML Web Search (bounded retry, explicit 5.0s timeout)
+    data = urllib.parse.urlencode({"q": clean_query}).encode("utf-8")
+    req = urllib.request.Request("https://html.duckduckgo.com/html/", data=data, headers=headers)
+    for attempt in range(2):
         try:
-            wiki_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={urllib.parse.quote(clean_query)}&limit=3&namespace=0&format=json"
-            req = urllib.request.Request(wiki_url, headers={"User-Agent": "CustomEngineeringAgent/1.0"})
-            with urllib.request.urlopen(req, timeout=5) as r:
-                wiki_data = json.loads(r.read().decode("utf-8"))
-                if len(wiki_data) > 1 and wiki_data[1]:
-                    for title in wiki_data[1][:2]:
-                        sum_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(title)}"
-                        sreq = urllib.request.Request(sum_url, headers={"User-Agent": "CustomEngineeringAgent/1.0"})
-                        with urllib.request.urlopen(sreq, timeout=5) as sr:
-                            sdata = json.loads(sr.read().decode("utf-8"))
-                            if sdata.get("extract"):
-                                snippets.append(f"[{title}]: {sdata['extract']}")
+            with urllib.request.urlopen(req, timeout=5.0) as response:
+                html = response.read().decode("utf-8", errors="ignore")
+                raw_snippets = re.findall(r'class=[\'"]result__snippet[\'"][^>]*>(.*?)</a>', html, re.DOTALL)
+                for s in raw_snippets[:5]:
+                    clean_s = re.sub(r'<[^>]+>', '', s).strip()
+                    if clean_s and len(clean_s) > 20:
+                        snippets.append(clean_s)
+                break
         except Exception:
-            pass
+            if attempt == 0:
+                time.sleep(0.3)
+
+    # 2. Secondary Engine: Wikipedia REST API (bounded retry, explicit 4.0s timeout)
+    if len(snippets) < 2:
+        wiki_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={urllib.parse.quote(clean_query)}&limit=3&namespace=0&format=json"
+        req = urllib.request.Request(wiki_url, headers={"User-Agent": "CustomEngineeringAgent/1.0"})
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=4.0) as r:
+                    wiki_data = json.loads(r.read().decode("utf-8"))
+                    if len(wiki_data) > 1 and wiki_data[1]:
+                        for title in wiki_data[1][:2]:
+                            sum_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(title)}"
+                            sreq = urllib.request.Request(sum_url, headers={"User-Agent": "CustomEngineeringAgent/1.0"})
+                            with urllib.request.urlopen(sreq, timeout=4.0) as sr:
+                                sdata = json.loads(sr.read().decode("utf-8"))
+                                if sdata.get("extract"):
+                                    snippets.append(f"[{title}]: {sdata['extract']}")
+                break
+            except Exception:
+                if attempt == 0:
+                    time.sleep(0.3)
 
     if not snippets:
         return f"Web search for '{clean_query}' completed with standard engineering reference defaults."

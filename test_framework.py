@@ -16,6 +16,7 @@ from tools import (
     OUTPUT_DIR,
     FALLBACK_REFERENCE_RATES,
     FALLBACK_RATE_SOURCE,
+    _validate_safe_filename,
 )
 from agent_brain import CustomAgentBrain
 
@@ -615,6 +616,185 @@ def test_currency_conversion_failure_observation_fallback_flow(monkeypatch):
     # 3. Verify final synthesized response
     assert "232,800" in final_output
     assert "static reference rate" in final_output.lower()
+
+
+# =============================================================================
+# HARDENED FRAMEWORK GUARDRAIL TESTS
+# =============================================================================
+
+def test_path_traversal_and_file_safety_guardrail():
+    """
+    Guardrail Test: Rejects directory traversal, absolute paths, dangerous extensions,
+    hidden/sensitive files, and reserved OS device names.
+    """
+    # 1. Directory traversal rejection
+    with pytest.raises(ValueError) as exc:
+        save_report_file("../../etc/passwd", "malicious content")
+    assert "Security Violation" in str(exc.value)
+    assert "traversal" in str(exc.value).lower()
+
+    with pytest.raises(ValueError) as exc:
+        save_report_file("..\\passwords.txt", "traversal attempt")
+    assert "Security Violation" in str(exc.value)
+    assert "traversal" in str(exc.value).lower()
+
+    # 2. Dangerous executable extensions rejection
+    for bad_ext in [".exe", ".bat", ".cmd", ".sh", ".ps1", ".vbs"]:
+        with pytest.raises(ValueError) as exc:
+            save_report_file(f"payload{bad_ext}", "bad data")
+        assert "Security Violation" in str(exc.value)
+        assert "forbidden" in str(exc.value).lower()
+
+    # 3. Hidden and sensitive config files rejection
+    for bad_file in [".env", ".gitignore", ".git"]:
+        with pytest.raises(ValueError) as exc:
+            save_report_file(bad_file, "SECRET=123")
+        assert "Security Violation" in str(exc.value)
+
+    # 4. Reserved OS device names rejection
+    for reserved in ["CON", "PRN", "AUX", "NUL", "COM1", "LPT1"]:
+        with pytest.raises(ValueError) as exc:
+            save_report_file(f"{reserved}.txt", "device stream")
+        assert "Security Violation" in str(exc.value)
+        assert "reserved OS system name" in str(exc.value)
+
+    # 5. Non-string content rejection
+    with pytest.raises(ValueError) as exc:
+        save_report_file("valid_name.txt", 12345)
+    assert "string" in str(exc.value).lower()
+
+
+def test_argument_validation_types_and_payloads(monkeypatch):
+    """
+    Guardrail Test: Framework strictly validates tool arguments against Python signature
+    and annotations before execution, rejecting non-dict payloads, missing arguments,
+    unexpected arguments, and type mismatches.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    agent = CustomAgentBrain(api_key="dummy_key_for_testing")
+    agent.register_tool(get_live_weather)
+    agent.register_tool(generate_fusion360_cad)
+
+    # 1. Reject non-dict argument payloads
+    err_str = agent._validate_arguments(get_live_weather, "Tokyo")
+    assert "key-value dictionary" in err_str
+
+    err_list = agent._validate_arguments(get_live_weather, ["Tokyo"])
+    assert "key-value dictionary" in err_list
+
+    # 2. Reject missing required arguments
+    err_missing = agent._validate_arguments(get_live_weather, {})
+    assert "missing" in err_missing.lower()
+
+    # 3. Reject unexpected arguments
+    err_unexpected = agent._validate_arguments(get_live_weather, {"city": "Tokyo", "unexpected_payload": 999})
+    assert "unexpected" in err_unexpected.lower()
+
+    # 4. Reject type mismatch for annotated str parameter
+    err_type_str = agent._validate_arguments(get_live_weather, {"city": 12345})
+    assert "must be of type str" in err_type_str
+
+    # 5. Reject type mismatch for annotated dict parameter
+    err_type_dict = agent._validate_arguments(
+        generate_fusion360_cad, 
+        {"component_type": "bracket", "parameters": "not_a_dict"}
+    )
+    assert "must be of type dict" in err_type_dict
+
+
+def test_cad_and_circuit_numeric_parameter_guardrail():
+    """
+    Guardrail Test: Rejects non-numeric or negative geometric / electrical specs
+    in CAD and LTspice tools to prevent injection or corruption.
+    """
+    # 1. Fusion 360 CAD parameter validation
+    with pytest.raises(ValueError) as exc:
+        generate_fusion360_cad("mounting_bracket", {"length": "eighty", "width": 40})
+    assert "must be a numeric float or int" in str(exc.value)
+
+    with pytest.raises(ValueError) as exc:
+        generate_fusion360_cad("mounting_bracket", {"length": -50, "width": 40})
+    assert "must be positive" in str(exc.value)
+
+    # 2. LTspice circuit spec validation
+    with pytest.raises(ValueError) as exc:
+        generate_ltspice_circuit("BadFilter", "low_pass_filter", {"cutoff_hz": "invalid"})
+    assert "must be a numeric float or int" in str(exc.value)
+
+    with pytest.raises(ValueError) as exc:
+        generate_ltspice_circuit("BadFilter", "low_pass_filter", {"cutoff_hz": 0})
+    assert "Cutoff frequency must be > 0" in str(exc.value)
+
+
+def test_error_message_secret_and_path_scrubbing(monkeypatch):
+    """
+    Guardrail Test: _sanitize_error_message scrubs API keys, environment credentials,
+    local usernames, and filesystem paths from exception observations.
+    """
+    dummy_key = "AIzaSyTestApiKey9876543210ABC"
+    monkeypatch.setenv("GEMINI_API_KEY", dummy_key)
+    monkeypatch.setenv("DATABASE_SECRET_TOKEN", "SuperSecretTokenXYZ12345")
+
+    agent = CustomAgentBrain(api_key=dummy_key)
+
+    raw_error = (
+        f"Database connection failed using key {dummy_key} and token SuperSecretTokenXYZ12345. "
+        r"Traceback file C:\Users\Muhammed Farhan\AppData\Local\secret.py, line 42."
+    )
+
+    clean_error = agent._sanitize_error_message(raw_error)
+
+    # 1. Verify API key was redacted
+    assert dummy_key not in clean_error
+    assert "[REDACTED_API_KEY]" in clean_error
+
+    # 2. Verify environment credential token was redacted
+    assert "SuperSecretTokenXYZ12345" not in clean_error
+    assert "[REDACTED_DATABASE_SECRET_TOKEN]" in clean_error
+
+    # 3. Verify local filesystem path was scrubbed
+    assert r"C:\Users\Muhammed Farhan" not in clean_error
+    assert "[LOCAL_PATH]" in clean_error or "[USER_HOME]" in clean_error
+
+
+def test_max_step_limit_validation():
+    """
+    Guardrail Test: Rejects zero or negative max_steps values during agent initialization.
+    """
+    with pytest.raises(ValueError) as exc:
+        CustomAgentBrain(api_key="test_key", max_steps=0)
+    assert "max_steps must be a positive integer" in str(exc.value)
+
+    with pytest.raises(ValueError) as exc:
+        CustomAgentBrain(api_key="test_key", max_steps=-5)
+    assert "max_steps must be a positive integer" in str(exc.value)
+
+
+def test_no_hallucinated_models_in_codebase():
+    """
+    Guardrail Test: Verifies that only the configured model is used and
+    invented models like 'gemini-3.5-flash-lite' are not queried.
+    """
+    agent = CustomAgentBrain(api_key="test_key", model_name="gemini-2.5-flash")
+    assert agent.model_name == "gemini-2.5-flash"
+    assert agent.fallback_model is None
+
+
+def test_troublemaker_tool_fails_immediately_without_retry():
+    """
+    Guardrail Test: Confirms the intentionally simulated Troublemaker tool
+    unreliable_live_rates fails immediately with HTTP 503 without being retried.
+    """
+    import time
+    start_time = time.time()
+    with pytest.raises(ConnectionError) as exc:
+        unreliable_live_rates("USD/JPY")
+    duration = time.time() - start_time
+
+    assert "503" in str(exc.value)
+    # Must fail in under 0.1 seconds without retry delays
+    assert duration < 0.5
+
 
 
 
