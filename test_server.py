@@ -32,7 +32,7 @@ def test_server_status_endpoint(live_server):
     assert resp.status_code == 200
     data = resp.json()
     assert "tools" in data
-    assert len(data["tools"]) == 6
+    assert len(data["tools"]) == 7
 
 
 def test_server_files_endpoint(live_server):

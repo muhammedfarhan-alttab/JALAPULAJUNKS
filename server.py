@@ -33,11 +33,14 @@ from tools import (
     unreliable_live_rates,
     generate_fusion360_cad,
     generate_ltspice_circuit,
+    search_web_for_circuit_or_model,
     TOOL_REGISTRY,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE_DIR, "web")
+OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -105,36 +108,42 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                         "name": "generate_ltspice_circuit",
                         "desc": "LTspice schematic & simulation netlist generator",
                     },
+                    {
+                        "name": "search_web_for_circuit_or_model",
+                        "desc": "Live web research for component datasheets, pinouts & CAD specs",
+                    },
                 ],
             }
             self.send_json(data)
             return
 
         if path == "/api/files":
-            # List user files created in directory (.txt, .md, .csv, .cir, .net, and CAD .py)
-            ignored = {"README.md", "bonus_comparison.md", "server.py", "agent_brain.py", "main.py", "tools.py", "test_framework.py", "test_server.py"}
+            # List user files created in output/ folder
             files = []
-            for fname in os.listdir(BASE_DIR):
-                if fname in ignored or fname.startswith("."):
-                    continue
-                if fname.endswith((".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", "_fusion.py")):
-                    fpath = os.path.join(BASE_DIR, fname)
-                    if os.path.isfile(fpath):
-                        stat = os.stat(fpath)
-                        files.append({
-                            "name": fname,
-                            "size": stat.st_size,
-                            "modified": int(stat.st_mtime),
-                        })
+            if os.path.exists(OUTPUT_DIR):
+                for fname in os.listdir(OUTPUT_DIR):
+                    if fname.startswith("."):
+                        continue
+                    if fname.endswith((".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", "_fusion.py", ".py")):
+                        fpath = os.path.join(OUTPUT_DIR, fname)
+                        if os.path.isfile(fpath):
+                            stat = os.stat(fpath)
+                            files.append({
+                                "name": fname,
+                                "size": stat.st_size,
+                                "modified": int(stat.st_mtime),
+                            })
             files.sort(key=lambda x: x["modified"], reverse=True)
-            self.send_json({"files": files})
+            self.send_json({"files": files, "folder": "output"})
             return
 
         if path == "/api/file":
             qs = urllib.parse.parse_qs(parsed.query)
             filename = qs.get("name", [""])[0]
             safe_name = os.path.basename(filename)
-            file_path = os.path.join(BASE_DIR, safe_name)
+            file_path = os.path.join(OUTPUT_DIR, safe_name)
+            if not (os.path.exists(file_path) and os.path.isfile(file_path)):
+                file_path = os.path.join(BASE_DIR, safe_name)
             if os.path.exists(file_path) and os.path.isfile(file_path):
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
@@ -161,10 +170,20 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Invalid JSON"}, status=400)
             return
 
+        if path == "/api/open_folder":
+            try:
+                os.startfile(OUTPUT_DIR)
+                self.send_json({"success": True, "message": f"Opened output folder: {OUTPUT_DIR}"})
+            except Exception as e:
+                self.send_json({"error": str(e)}, status=500)
+            return
+
         if path == "/api/open":
             filename = payload.get("filename", "").strip()
             safe_name = os.path.basename(filename)
-            file_path = os.path.join(BASE_DIR, safe_name)
+            file_path = os.path.join(OUTPUT_DIR, safe_name)
+            if not os.path.exists(file_path):
+                file_path = os.path.join(BASE_DIR, safe_name)
             if not os.path.exists(file_path):
                 self.send_json({"error": f"File '{safe_name}' not found"}, status=404)
                 return
@@ -238,6 +257,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                     unreliable_live_rates,
                     generate_fusion360_cad,
                     generate_ltspice_circuit,
+                    search_web_for_circuit_or_model,
                 ])
                 effective_prompt = prompt or "Analyze this image and model or simulate it using the appropriate engineering tools."
                 final_answer = agent.run(

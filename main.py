@@ -30,6 +30,7 @@ from tools import (
     unreliable_live_rates,
     generate_fusion360_cad,
     generate_ltspice_circuit,
+    search_web_for_circuit_or_model,
 )
 
 
@@ -53,10 +54,10 @@ def get_agent() -> CustomAgentBrain:
             f.write(f"GEMINI_API_KEY={api_key}\n")
         print("Saved GEMINI_API_KEY to .env for future runs!\n")
 
-    # Initialize our from-scratch agent brain
+    # Initialize our from-scratch agent brain (default max_steps=10)
     agent = CustomAgentBrain(api_key=api_key)
 
-    # Register all 6 tools dynamically
+    # Register all 7 tools dynamically into our transparent registry
     agent.register_tools([
         get_live_weather,
         calculate_currency_or_math,
@@ -64,6 +65,7 @@ def get_agent() -> CustomAgentBrain:
         unreliable_live_rates,
         generate_fusion360_cad,
         generate_ltspice_circuit,
+        search_web_for_circuit_or_model,
     ])
 
     return agent
@@ -74,11 +76,14 @@ def run_demo_menu():
 ==================================================================
   🧠 BUILD THE BRAIN, NOT THE PUPPET: CUSTOM AGENT FRAMEWORK
 ==================================================================
-  Tools Loaded:
-    1. get_live_weather          (Real-world weather lookup)
-    2. calculate_currency_or_math (Safe precision calculator)
-    3. save_report_file          (Local hard-drive file writer)
-    4. unreliable_live_rates     (The Troublemaker: intentional 503)
+  Registered Tools:
+    1. get_live_weather               (Real-world weather lookup)
+    2. calculate_currency_or_math      (Safe AST calculator & ECB/Fed reference benchmark rates)
+    3. save_report_file               (Local output/ folder file writer)
+    4. unreliable_live_rates          (The Troublemaker: intentional 503 live gateway test)
+    5. generate_fusion360_cad         (Autodesk Fusion 360 3D CAD script)
+    6. generate_ltspice_circuit       (LTspice .asc schematic & netlist)
+    7. search_web_for_circuit_or_model(Live web research for specs & pinouts)
 ==================================================================
 """)
     
@@ -91,15 +96,30 @@ def run_demo_menu():
         ),
         "2": (
             "Multi-Tool Chaining: Weather + Math + File Saving",
-            "Check the weather in Tokyo. Convert $1500 USD into Japanese Yen at 155.2 JPY/USD. "
+            "Check the weather in Tokyo. Convert $1500 USD into Japanese Yen using our documented "
+            "reference benchmark rate (155.2 JPY/USD, ECB reference). "
             "Then write a complete travel summary report into 'tokyo_plan.txt'."
         ),
         "3": (
-            "Error Recovery (The Troublemaker Test)",
-            "Fetch the live exchange rate for USD/EUR using the unreliable_live_rates tool. "
-            "If that service fails or errors out, observe the error, don't give up, and instead "
-            "use calculate_currency_or_math with rate 0.92 to convert $500 USD into Euros. "
-            "Finally, save an incident report into 'recovery_log.txt'."
+            "Error Recovery (The Troublemaker Test: $1500 USD -> JPY Fallback)",
+            "Attempt to fetch the live exchange rate for USD/JPY using the unreliable_live_rates tool. "
+            "When that live service fails or errors out, observe the failure, don't give up, and instead "
+            "fall back to calculate_currency_or_math using our documented reference benchmark (155.20 JPY/USD) "
+            "to convert $1500 USD into Japanese Yen. Finally, save an incident report into 'recovery_log.txt'."
+        ),
+        "4": (
+            "Autodesk Fusion 360 3D CAD Generation",
+            "Design a parametric sensor mounting bracket in Autodesk Fusion 360 with length 80mm, "
+            "width 40mm, thickness 4mm, and two 5mm screw holes. Generate the script."
+        ),
+        "5": (
+            "LTspice Circuit Schematic & Netlist Generation",
+            "Design a passive low-pass RC filter circuit for LTspice with a target cutoff frequency of 1 kHz. "
+            "Calculate component values and generate the .asc schematic and simulation netlist."
+        ),
+        "6": (
+            "Live Web Research (Datasheets & Pinouts)",
+            "Look up the pinout and function of the LM741 operational amplifier using web search, and write a summary."
         ),
     }
 
@@ -108,11 +128,14 @@ def run_demo_menu():
         print("  1. Run Single-Tool Test (Weather)")
         print("  2. Run Multi-Tool Chain (Weather + Math + File Save)")
         print("  3. Run Error Recovery Test (The Troublemaker -> Self-Correction)")
-        print("  4. Enter your own custom prompt")
-        print("  5. View Bonus Comparison (Our Engine vs LangChain)")
+        print("  4. Run Autodesk Fusion 360 CAD Model Generation")
+        print("  5. Run LTspice Circuit Schematic Generation (.asc)")
+        print("  6. Run Live Web Research (IC Pinouts / CAD Specs)")
+        print("  7. Enter your own custom prompt")
+        print("  8. View Bonus Comparison (Our Engine vs LangChain)")
         print("  Q. Quit")
 
-        choice = input("\nEnter choice [1-5 or Q]: ").strip()
+        choice = input("\nEnter choice [1-8 or Q]: ").strip()
 
         if choice.upper() == "Q":
             print("Goodbye!")
@@ -121,18 +144,18 @@ def run_demo_menu():
             title, prompt = demos[choice]
             print(f"\n---> Running: {title}")
             agent.run(prompt)
-        elif choice == "4":
+        elif choice == "7":
             prompt = input("\nEnter your custom prompt for the agent: ").strip()
             if prompt:
                 agent.run(prompt)
-        elif choice == "5":
+        elif choice == "8":
             if os.path.exists("bonus_comparison.md"):
                 with open("bonus_comparison.md", "r", encoding="utf-8") as f:
                     print("\n" + f.read())
             else:
                 print("bonus_comparison.md not found.")
         else:
-            print("Invalid choice, please select 1-5 or Q.")
+            print("Invalid choice, please select 1-8 or Q.")
 
 
 if __name__ == "__main__":

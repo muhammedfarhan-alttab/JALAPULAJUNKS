@@ -1,0 +1,14 @@
+﻿# Environment variables and secrets
+.env
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.class
+.pytest_cache/
+
+# Runtime and daemon logs
+*.log
+
+# Generated user artifacts
+output/

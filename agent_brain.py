@@ -7,6 +7,7 @@ It directly implements the fundamental Agent Loop:
 using the native Google GenAI SDK solely for raw LLM inference.
 """
 
+import inspect
 import os
 import sys
 import time
@@ -28,9 +29,9 @@ class CustomAgentBrain:
     A transparent, from-scratch AI Agent implementation.
     
     Attributes:
-        client: The Gemini API client.
+        client: The Gemini API client (used solely for raw LLM inference).
         model_name: The Gemini model identifier.
-        tools: A dictionary of registered callable Python functions.
+        tool_functions: A dictionary mapping tool names to callable Python functions.
         max_steps: Guardrail against infinite loops.
     """
 
@@ -38,7 +39,7 @@ class CustomAgentBrain:
         self,
         api_key: str = None,
         model_name: str = "gemini-3.1-flash-lite",
-        max_steps: int = 8,
+        max_steps: int = 10,
     ):
         key = api_key or os.environ.get("GEMINI_API_KEY")
         if not key:
@@ -46,19 +47,32 @@ class CustomAgentBrain:
                 "GEMINI_API_KEY is not set! Please provide it in .env or pass api_key."
             )
 
+        self.api_key = key
         self.client = genai.Client(api_key=key)
         self.model_name = model_name
         self.max_steps = max_steps
         self.tool_functions: Dict[str, Callable] = {}
 
     def register_tool(self, func: Callable):
-        """Register a Python function as an agent tool."""
+        """Register a Python function as an agent tool in our transparent dictionary."""
         self.tool_functions[func.__name__] = func
 
     def register_tools(self, funcs: List[Callable]):
         """Register multiple Python functions as agent tools."""
         for f in funcs:
             self.register_tool(f)
+
+    def _validate_arguments(self, func: Callable, args: dict) -> Optional[str]:
+        """
+        Guardrail: Validates that arguments match the function signature BEFORE execution.
+        Prevents executing calls with missing required arguments or unexpected parameters.
+        """
+        try:
+            sig = inspect.signature(func)
+            sig.bind(**args)
+            return None
+        except TypeError as te:
+            return str(te)
 
     def run(
         self,
@@ -88,8 +102,7 @@ class CustomAgentBrain:
                     pass
 
         print("\n" + "=" * 65)
-        print("🚀 [AGENT STARTED] Solving Goal:")
-        print(f"   \"{user_prompt}\"")
+        print(f"🔵 USER REQUEST: \"{user_prompt}\"")
         if image_bytes:
             print(f"   📷 [MULTIMODAL ATTACHMENT]: {len(image_bytes)} bytes ({image_mime or 'image/jpeg'})")
         print("=" * 65)
@@ -100,15 +113,21 @@ class CustomAgentBrain:
         system_instruction = (
             "You are an autonomous problem-solving AI agent. "
             "You have access to a suite of tools to retrieve data, perform calculations, "
-            "save files, and generate Autodesk Fusion 360 3D CAD scripts and LTspice circuit netlists.\n"
-            "If the user provides an image (such as a photo of a physical part, dimension drawing, or circuit diagram), "
-            "carefully inspect its visual features, geometry, or electronic components, and use the appropriate engineering tool "
-            "(generate_fusion360_cad or generate_ltspice_circuit) to model it accurately.\n"
+            "save files, search the web for engineering specs, and generate Autodesk Fusion 360 3D CAD scripts and LTspice circuits.\n"
+            "If the user provides an image (such as a photo of a physical part, dimension drawing, or circuit diagram) or asks to design/model something:\n"
+            "- Carefully inspect its visual features, geometry, or electronic components.\n"
+            "- Whenever you encounter unfamiliar ICs, circuit components, pinouts, or mechanical tolerances/standards, "
+            "use the 'search_web_for_circuit_or_model' tool to verify datasheet specs, pin connections, or dimensional standards first.\n"
+            "- Then use the appropriate engineering tool ('generate_fusion360_cad' or 'generate_ltspice_circuit') to model it accurately.\n"
             "RULES:\n"
             "1. Dynamically select the best tool for each step. Never guess what you can verify with a tool.\n"
             "2. IF A TOOL CALL FAILS or returns an error: Do NOT give up or crash! Observe the error message, "
             "explain what happened in your next reasoning step, and use an alternative tool or approach to complete the task.\n"
-            "3. Once the entire task is complete, provide a comprehensive final response to the user."
+            "3. For currency conversions: If live rate retrieval ('unreliable_live_rates') fails due to a gateway outage, "
+            "fall back to 'calculate_currency_or_math' using our documented static reference benchmark rates "
+            "(e.g., USD/JPY = 155.20 from published ECB/Fed benchmarks). In your final synthesis, remain technically honest "
+            "and explicitly state that a static reference/fallback benchmark rate was used, NOT a live rate.\n"
+            "4. Once the entire task is complete, provide a comprehensive final response to the user."
         )
 
         # Configuration: Pass our Python functions as tools, but DISABLE automatic calling
@@ -213,54 +232,84 @@ class CustomAgentBrain:
             if not function_calls:
                 # No more tools needed: We reached the final answer!
                 final_text = response.text or "(Task completed with no final text)"
-                print(f"\n🎯 [TASK COMPLETED] Agent formulated final answer after {step_counter} step(s).")
+                print(f"\n✅ [STEP {step_counter}: COMPLETE] Final synthesized output received after {step_counter} step(s):")
                 print("=" * 65)
                 print(final_text)
                 print("=" * 65)
                 emit("final_answer", {"step": step_counter, "answer": final_text})
                 return final_text
 
-            # ACT & OBSERVE: Gemini decided to use one or more tools
+            # ACT & OBSERVE: Gemini requested one or more tool calls
             for call in function_calls:
                 func_name = call.name
                 func_args = call.args or {}
 
-                print(f"\n🛠️  [STEP {step_counter}: ACT] Agent chose tool: '{func_name}'")
+                print(f"\n🛠️  [STEP {step_counter}: ACT] Python Framework executing requested tool: '{func_name}'")
                 print(f"    Arguments: {dict(func_args)}")
                 emit("act", {"step": step_counter, "tool": func_name, "args": dict(func_args)})
 
-                # Check if the requested tool is registered in our framework
+                # Explicit Control Boundary 1: Verify tool is registered in Python framework
                 if func_name not in self.tool_functions:
                     observation_payload = {
-                        "error": f"Tool '{func_name}' does not exist. Available tools: {list(self.tool_functions.keys())}"
+                        "tool": func_name,
+                        "success": False,
+                        "error_type": "ToolNotFoundError",
+                        "error": f"Tool '{func_name}' is not registered in framework. Available tools: {list(self.tool_functions.keys())}",
+                        "recovery_hint": "Please select from the available tools registered in the framework."
                     }
-                    print(f"⚠️  [OBSERVE: UNKNOWN TOOL] {observation_payload['error']}")
+                    print(f"⚠️  [STEP {step_counter}: ERROR] Tool '{func_name}' does not exist.")
+                    print(f"♻️  [STEP {step_counter}: RECOVERY] Feeding structured error back to Gemini for autonomous self-correction...")
                     emit("observe_error", {"step": step_counter, "tool": func_name, "error": observation_payload["error"]})
                 else:
-                    # Execute tool inside our safety net (Try / Except)
-                    try:
-                        tool_fn = self.tool_functions[func_name]
-                        raw_result = tool_fn(**func_args)
-                        observation_payload = {"result": raw_result}
-                        print(f"👁️  [STEP {step_counter}: OBSERVE] Tool executed successfully:")
-                        print(f"    Result: {raw_result}")
-                        emit("observe_success", {"step": step_counter, "tool": func_name, "result": str(raw_result)})
-                    except Exception as tool_exc:
-                        # ERROR RECOVERY: The tool failed, but the agent framework catches it!
-                        # We package the error message and feed it back so Gemini can reason and self-correct.
-                        error_msg = f"ERROR: Tool '{func_name}' execution failed: {str(tool_exc)}"
-                        observation_payload = {"error": error_msg}
-                        print(f"⚠️  [STEP {step_counter}: OBSERVE - FAILURE DETECTED!]")
-                        print(f"    Notice: {error_msg}")
-                        print(f"    -> Feeding error back to Gemini so it can recover...")
-                        emit("observe_error", {
-                            "step": step_counter,
+                    tool_fn = self.tool_functions[func_name]
+                    # Explicit Control Boundary 2: Validate arguments against Python signature before execution
+                    validation_error = self._validate_arguments(tool_fn, func_args)
+                    if validation_error:
+                        sig = inspect.signature(tool_fn)
+                        observation_payload = {
                             "tool": func_name,
-                            "error": str(tool_exc),
-                            "recovery_note": "Exception safely intercepted. Sending error back to model for autonomous recovery."
-                        })
+                            "success": False,
+                            "error_type": "ArgumentValidationError",
+                            "error": f"Invalid arguments for '{func_name}': {validation_error}",
+                            "recovery_hint": f"Expected parameters for '{func_name}': {list(sig.parameters.keys())}. Please fix the arguments."
+                        }
+                        print(f"⚠️  [STEP {step_counter}: ERROR] Argument validation failed for '{func_name}': {validation_error}")
+                        print(f"♻️  [STEP {step_counter}: RECOVERY] Feeding structured error back to Gemini for autonomous self-correction...")
+                        emit("observe_error", {"step": step_counter, "tool": func_name, "error": observation_payload["error"]})
+                    else:
+                        # Explicit Control Boundary 3: Execute tool inside safety net
+                        try:
+                            raw_result = tool_fn(**func_args)
+                            observation_payload = {
+                                "tool": func_name,
+                                "success": True,
+                                "result": raw_result,
+                            }
+                            print(f"👁️  [STEP {step_counter}: OBSERVE] Tool '{func_name}' executed successfully:")
+                            print(f"    Result: {raw_result}")
+                            emit("observe_success", {"step": step_counter, "tool": func_name, "result": str(raw_result)})
+                        except Exception as tool_exc:
+                            # ERROR RECOVERY: Intercept exception, sanitize secrets, package structured observation
+                            safe_err_msg = str(tool_exc)
+                            if self.api_key and self.api_key in safe_err_msg:
+                                safe_err_msg = safe_err_msg.replace(self.api_key, "[REDACTED_API_KEY]")
+                            observation_payload = {
+                                "tool": func_name,
+                                "success": False,
+                                "error_type": type(tool_exc).__name__,
+                                "error": safe_err_msg,
+                                "recovery_hint": "Tool execution encountered an exception. Read the error message and choose an alternative tool or approach to complete the task."
+                            }
+                            print(f"⚠️  [STEP {step_counter}: ERROR] Tool '{func_name}' execution failed: {safe_err_msg}")
+                            print(f"♻️  [STEP {step_counter}: RECOVERY] Feeding structured error back to Gemini for autonomous self-correction...")
+                            emit("observe_error", {
+                                "step": step_counter,
+                                "tool": func_name,
+                                "error": safe_err_msg,
+                                "recovery_note": "Exception safely intercepted. Sending structured observation back to model for autonomous recovery."
+                            })
 
-                # Construct function response part for the conversation
+                # REPEAT: Construct function response observation part for conversation history
                 response_part = types.Part.from_function_response(
                     name=func_name,
                     response=observation_payload,
@@ -270,7 +319,8 @@ class CustomAgentBrain:
                     parts=[response_part],
                 )
                 history.append(tool_content)
+                print(f"🔁 [STEP {step_counter}: REPEAT] Appended observation to history. Prompting Gemini for next action...")
 
         print(f"\n🛑 [STOPPED] Reached maximum allowed safety steps ({self.max_steps}).")
         emit("max_steps_reached", {"max_steps": self.max_steps})
-        return "Agent stopped: Maximum reasoning steps reached."
+        return f"Agent stopped: Reached maximum reasoning/action limit of {self.max_steps} steps without completing the task."

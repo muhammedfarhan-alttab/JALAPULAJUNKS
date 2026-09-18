@@ -694,8 +694,9 @@
         <button class="preset-chip" onclick="loadPreset(3)">3. Troublemaker</button>
         <button class="preset-chip" onclick="loadPreset(4)">4. Fusion 360 CAD</button>
         <button class="preset-chip" onclick="loadPreset(5)">5. LTspice Circuit</button>
-        <button class="preset-chip" onclick="loadPreset(6)">6. Hardware Co-Design</button>
-        <button class="preset-chip" onclick="loadPreset(7)">7. Photo Analysis</button>
+        <button class="preset-chip" onclick="loadPreset(6)">6. Co-Design</button>
+        <button class="preset-chip" onclick="loadPreset(7)">7. Circuit Photo ➔ LTspice</button>
+        <button class="preset-chip" onclick="loadPreset(8)">8. CAD Photo ➔ Fusion 360</button>
       </div>
 
       <!-- Prompt Input -->
@@ -758,7 +759,7 @@
           </div>
           <div class="tool-item">
             <div class="tool-name">calculate_currency_or_math</div>
-            <div class="tool-desc">Safe precision calculator & math</div>
+            <div class="tool-desc">AST calculator & ECB/Fed reference benchmark rates</div>
           </div>
           <div class="tool-item">
             <div class="tool-name">save_report_file</div>
@@ -769,7 +770,7 @@
               unreliable_live_rates
               <span class="troublemaker-tag">Troublemaker</span>
             </div>
-            <div class="tool-desc">Simulates 503 error to test recovery</div>
+            <div class="tool-desc">Chaos test: simulates live gateway 503 outage</div>
           </div>
           <div class="tool-item">
             <div class="tool-name" style="color: #67e8f9;">generate_fusion360_cad</div>
@@ -777,7 +778,11 @@
           </div>
           <div class="tool-item">
             <div class="tool-name" style="color: #cbd5e1;">generate_ltspice_circuit</div>
-            <div class="tool-desc">LTspice SPICE simulation (.cir / .net)</div>
+            <div class="tool-desc">LTspice SPICE simulation (.cir / .net / .asc)</div>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name" style="color: #38bdf8;">search_web_for_circuit_or_model</div>
+            <div class="tool-desc">Web search for datasheets, pinouts & CAD specs</div>
           </div>
         </div>
       </div>
@@ -785,8 +790,11 @@
       <!-- Generated Files on Disk -->
       <div class="side-card">
         <div class="side-title" style="display: flex; justify-content: space-between; align-items: center;">
-          <span>Generated Files</span>
-          <span style="cursor: pointer;" onclick="refreshFiles()">⟳</span>
+          <span>Generated Files <span style="color: var(--text-dim); font-size: 10px; font-weight: normal;">(output/)</span></span>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span style="cursor: pointer; font-size: 11px; color: var(--text-muted);" onclick="openOutputFolder()" title="Open output folder in Windows Explorer">📂 Folder</span>
+            <span style="cursor: pointer;" onclick="refreshFiles()" title="Refresh files list">⟳</span>
+          </div>
         </div>
         <div class="file-list" id="fileList">
           <div style="color: var(--text-dim); font-size: 11px; font-family: var(--mono);">No agent files generated yet.</div>
@@ -881,12 +889,13 @@
   <script>
     const PRESETS = {
       1: "What is the current weather in Tokyo?",
-      2: "Check the weather in Tokyo. Convert $1500 USD into Japanese Yen at 155.2 JPY/USD. Then write a complete travel summary report into 'tokyo_plan.txt'.",
-      3: "Fetch the live exchange rate for USD/EUR using unreliable_live_rates. If that fails or gives an error, do not give up: observe the error and calculate 500 * 0.92 using calculate_currency_or_math instead. Then write an incident report into 'recovery_log.txt'.",
+      2: "Check the weather in Tokyo. Convert $1500 USD into Japanese Yen using our documented reference benchmark rate (155.2 JPY/USD, ECB reference). Then write a complete travel summary report into 'tokyo_plan.txt'.",
+      3: "Attempt to fetch the live exchange rate for USD/JPY using unreliable_live_rates. When that live service fails with 503, observe the failure, don't give up, and fall back to calculate_currency_or_math using our documented reference benchmark (155.20 JPY/USD) to convert $1500 USD into Japanese Yen. Finally, save an incident report into 'recovery_log.txt'.",
       4: "Design a parametric sensor mounting bracket in Autodesk Fusion 360 with length 80mm, width 40mm, thickness 4mm, and two 5mm screw holes. Generate the complete Autodesk Fusion 360 script.",
       5: "Design a passive low-pass RC filter circuit for LTspice with a target cutoff frequency of 1 kHz. Calculate the required resistor and capacitor values, and generate the complete simulation netlist.",
       6: "Design a 12V to 5V precision voltage divider circuit for LTspice with R1=10k. Then design an Autodesk Fusion 360 3D electronic enclosure with length 100mm, width 60mm, and height 30mm to house the circuit, and write an engineering summary.",
-      7: "Inspect this attached photo carefully. If it shows a mechanical component or mounting plate, generate a parametric Autodesk Fusion 360 script to manufacture it. If it shows an electrical schematic or circuit, generate an LTspice simulation netlist."
+      7: "Inspect this attached circuit photo. Use search_web_for_circuit_or_model to look up the component datasheet specs, pinouts, and standard values. Then calculate the components and generate the LTspice schematic and simulation files.",
+      8: "Inspect this attached photo of a mechanical component. Use search_web_for_circuit_or_model to look up standard CAD dimensions, clearance hole sizing, or fastener specs. Then generate the parametric Autodesk Fusion 360 script."
     };
 
     let isRunning = false;
@@ -1327,6 +1336,18 @@
     function openCurrentFileInApp() {
       if (currentOpenFileName) {
         openInLTspice(currentOpenFileName);
+      }
+    }
+
+    async function openOutputFolder() {
+      try {
+        const res = await fetch("/api/open_folder", { method: "POST" });
+        const data = await res.json();
+        if (!data.success) {
+          alert("Could not open output folder: " + (data.error || "Unknown"));
+        }
+      } catch (err) {
+        alert("Error opening output folder: " + err);
       }
     }
 

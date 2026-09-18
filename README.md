@@ -17,16 +17,58 @@ In this project, **we built the brain ourselves**:
 
 ---
 
-## 🛠️ The 4 Built-In Tools
+## 🛠️ The 7 Registered Tools
 
-| Tool | Purpose | Real-world Behavior |
+All tools are stored in a transparent Python dictionary (`TOOL_REGISTRY`) and executed exclusively by our custom Python loop:
+
+| Tool | Purpose | Real-World Behavior |
 | :--- | :--- | :--- |
-| `get_live_weather` | Real-time weather lookup | Fetches current live temperature and conditions for any city via wttr.in. |
-| `calculate_currency_or_math` | Precision calculator | Evaluates mathematical expressions and currency calculations safely. |
-| `save_report_file` | File writer / Note-taker | Writes real summary reports directly onto your hard drive. |
-| `unreliable_live_rates` | **The Troublemaker** | Intentionally raises an `HTTP 503 Service Unavailable` error to test the agent's error detection and autonomous recovery. |
+| `get_live_weather` | Real-time weather lookup | Fetches live weather conditions via wttr.in JSON API (with deterministic fallback). |
+| `calculate_currency_or_math` | AST Calculator & Reference Rates | Evaluates math expressions and converts currency using documented **ECB & Federal Reserve static reference benchmarks** (e.g. USD/JPY=155.20). Explicitly labeled as static reference rates, never fake live data. |
+| `save_report_file` | File writer / Note-taker | Writes reports directly into the dedicated `output/` folder with path sanitization. |
+| `unreliable_live_rates` | **The Troublemaker** (Chaos Test) | Chaos testing tool simulating an external banking gateway timeout (`HTTP 503 Service Unavailable`) to test error interception and fallback recovery. (Can optionally query `open.er-api.com` if `ENABLE_LIVE_RATES=true`). |
+| `generate_fusion360_cad` | 3D CAD Parametric Scripting | Generates ready-to-run Autodesk Fusion 360 Python API scripts (`_fusion.py`) with geometric conflict validation. |
+| `generate_ltspice_circuit` | Circuit Schematic & Netlist | Generates LTspice graphical schematics (`.asc`) and SPICE netlists (`.cir`) with component value calculation. |
+| `search_web_for_circuit_or_model` | Live Web Engineering Search | Queries DuckDuckGo and Wikipedia REST API for IC pinouts, datasheets, and fastener standards. |
 
 ---
+
+## 💱 Currency Conversion & Technical Honesty Architecture
+
+To maintain **100% technical honesty** during hackathon demonstrations:
+1. **No Fake Live Data**: We never fabricate or invent real-time market numbers.
+2. **Clear Conceptual Separation**:
+   ```
+   unreliable_live_rates()
+       ↓
+   external rate service fails (HTTP 503 Timeout)
+       ↓
+   framework intercepts exception & builds structured observation
+       ↓
+   Gemini observes failure payload & recovery hint
+       ↓
+   Gemini autonomously selects calculate_currency_or_math()
+       ↓
+   calculator applies documented static reference rate (USD_JPY = 155.20)
+       ↓
+   conversion succeeds with explicit benchmark attribution
+   ```
+3. **Reference Rate Authority**:
+   - **Source**: *European Central Bank (ECB) & Federal Reserve Reference Benchmark (Q1 2026 Reference Baseline)*.
+   - **Rates**: `USD/JPY = 155.20`, `USD/EUR = 0.9200`, `EUR/USD = 1.0870`, `USD/GBP = 0.7850`, `GBP/USD = 1.2740`.
+   - Any conversion performed using these rates is explicitly tagged: `[REFERENCE RATE APPLIED / BENCHMARK DETECTED ... NOTE: Static benchmark reference rate, NOT a live rate]`.
+
+---
+
+## 🛡️ Built-In Framework Guardrails
+
+1. **Explicit Control Boundary**: The Gemini model *never* executes Python code directly. It can only propose a tool call. Our Python loop checks registration, verifies arguments via `inspect.signature()`, and executes within a `try/except` sandbox.
+2. **Structured Observations**: Every tool turn returns a structured dictionary (`tool`, `success: bool`, `result` or `error_type`, `error`, `recovery_hint`) so Gemini can reason and self-correct on failure.
+3. **AST-Based Math Sandboxing**: Mathematical expressions are parsed into an Abstract Syntax Tree (AST) restricting execution to numbers and arithmetic operators (`+`, `-`, `*`, `/`, `**`, `sqrt`) and safe reference rate variables. Python object traversal (`.__class__`) is strictly blocked.
+4. **Path Sanitization**: `os.path.basename` prevents directory traversal (`../../`), confining generated files to `output/`.
+5. **Secret Redaction**: Error observations automatically strip API keys and sensitive tokens before transmitting state back to the model.
+6. **Step Limit**: Default `max_steps = 10` prevents runaway infinite reasoning loops.
+7. **Resilient API Retry**: 3-attempt exponential backoff on transient 503/429 spikes with automatic model fallback to `gemini-3.5-flash-lite`.
 
 ## 🚀 Quick Start Guide
 
@@ -56,12 +98,18 @@ You will see an interactive menu:
 ```
 Select an action:
   1. Run Single-Tool Test (Weather)
-  2. Run Multi-Tool Chain (Weather + Math + File Save)
-  3. Run Error Recovery Test (The Troublemaker -> Self-Correction)
+  2. Run Multi-Tool Chain (Weather + Reference Rate + File Save)
+  3. Run Error Recovery Test (The Troublemaker -> Reference Rate Fallback)
   4. Enter your own custom prompt
   5. View Bonus Comparison (Our Engine vs LangChain)
   Q. Quit
 ```
+
+### 💡 Demo Tracks Explained
+
+- **Track 1 (Weather Lookup)**: Demonstrates single-turn autonomous tool selection calling `get_live_weather`.
+- **Track 2 (Tokyo Trip: Weather + Reference Rate Conversion + File Save)**: Demonstrates multi-tool chaining. Converts `$1500 USD` to Japanese Yen using our documented static reference benchmark rate (`155.20 JPY/USD` from ECB/Fed benchmark data), then writes a complete itinerary to `output/tokyo_plan.txt`.
+- **Track 3 (The Troublemaker: Error Recovery & Fallback)**: Demonstrates autonomous self-correction. Attempts `unreliable_live_rates("USD/JPY")`, intercepts the simulated 503 gateway outage, observes the failure payload and recovery hint, falls back to `calculate_currency_or_math` with documented reference benchmark `USD_JPY = 155.20`, converts `$1500 USD` to `232,800 JPY`, and records an incident recovery log in `output/recovery_log.txt`.
 
 ---
 

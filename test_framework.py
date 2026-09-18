@@ -11,19 +11,24 @@ from tools import (
     unreliable_live_rates,
     generate_fusion360_cad,
     generate_ltspice_circuit,
+    search_web_for_circuit_or_model,
     TOOL_REGISTRY,
+    OUTPUT_DIR,
+    FALLBACK_REFERENCE_RATES,
+    FALLBACK_RATE_SOURCE,
 )
 from agent_brain import CustomAgentBrain
 
 
 def test_tool_registry():
-    assert len(TOOL_REGISTRY) == 6
+    assert len(TOOL_REGISTRY) == 7
     assert "get_live_weather" in TOOL_REGISTRY
     assert "calculate_currency_or_math" in TOOL_REGISTRY
     assert "save_report_file" in TOOL_REGISTRY
     assert "unreliable_live_rates" in TOOL_REGISTRY
     assert "generate_fusion360_cad" in TOOL_REGISTRY
     assert "generate_ltspice_circuit" in TOOL_REGISTRY
+    assert "search_web_for_circuit_or_model" in TOOL_REGISTRY
 
 
 def test_weather_tool():
@@ -42,12 +47,13 @@ def test_file_saver_tool(tmp_path):
     test_file = tmp_path / "test_note.txt"
     res = save_report_file(str(test_file), "Agent Framework Test Successful!")
     assert "Success" in res
+    target = os.path.join(OUTPUT_DIR, "test_note.txt")
     # Verify file content
-    with open("test_note.txt", "r", encoding="utf-8") as f:
+    with open(target, "r", encoding="utf-8") as f:
         assert f.read() == "Agent Framework Test Successful!"
     # Cleanup
-    if os.path.exists("test_note.txt"):
-        os.remove("test_note.txt")
+    if os.path.exists(target):
+        os.remove(target)
 
 
 def test_troublemaker_tool():
@@ -126,14 +132,16 @@ def test_fusion360_cad_tool():
     params = {"length": 80, "width": 40, "thickness": 4, "hole_diameter": 5}
     res = generate_fusion360_cad("mounting_bracket", params, "test_bracket_fusion.py")
     assert "Success" in res
-    assert os.path.exists("test_bracket_fusion.py")
+    target = os.path.join(OUTPUT_DIR, "test_bracket_fusion.py")
+    assert os.path.exists(target)
 
-    with open("test_bracket_fusion.py", "r", encoding="utf-8") as f:
+    with open(target, "r", encoding="utf-8") as f:
         content = f.read()
     assert "adsk.core" in content
     assert "adsk.fusion" in content
     assert "addTwoPointRectangle" in content
-    os.remove("test_bracket_fusion.py")
+    if os.path.exists(target):
+        os.remove(target)
 
     # Test geometric validation conflict
     invalid_params = {"length": 40, "width": 20, "thickness": 4, "hole_diameter": 50}
@@ -146,15 +154,23 @@ def test_ltspice_circuit_tool():
     specs = {"cutoff_hz": 1000, "c_value_uf": 0.1}
     res = generate_ltspice_circuit("TestFilter", "low_pass_filter", specs, "test_filter.cir")
     assert "Success" in res
-    assert os.path.exists("test_filter.cir")
+    target_cir = os.path.join(OUTPUT_DIR, "test_filter.cir")
+    target_asc = os.path.join(OUTPUT_DIR, "test_filter.asc")
+    assert os.path.exists(target_cir)
+    assert os.path.exists(target_asc)
 
-    with open("test_filter.cir", "r", encoding="utf-8") as f:
+    with open(target_cir, "r", encoding="utf-8") as f:
         netlist = f.read()
     assert "* LTspice Simulation Netlist" in netlist
     assert ".ac dec" in netlist
     assert "R1 in out" in netlist
     assert "C1 out 0 0.1u" in netlist
-    os.remove("test_filter.cir")
+    
+    # Cleanup both .cir and .asc
+    if os.path.exists(target_cir):
+        os.remove(target_cir)
+    if os.path.exists(target_asc):
+        os.remove(target_asc)
 
     # Test invalid frequency
     with pytest.raises(ValueError) as exc:
@@ -201,6 +217,407 @@ def test_multimodal_agent_loop(monkeypatch):
     assert len(history) >= 1
     assert len(history[0].parts) == 2
     assert history[0].parts[0].inline_data.data == dummy_png
+
+
+def test_search_web_for_circuit_or_model():
+    """Verify web search tool retrieves information for circuit IC or CAD specs."""
+    res_circuit = search_web_for_circuit_or_model("LM741 operational amplifier pinout")
+    assert isinstance(res_circuit, str)
+    assert len(res_circuit) > 20
+
+    res_cad = search_web_for_circuit_or_model("M3 screw clearance hole diameter standard")
+    assert isinstance(res_cad, str)
+    assert len(res_cad) > 20
+
+
+def test_multimodal_circuit_web_agent_loop(monkeypatch, tmp_path):
+    """
+    Verifies end-to-end multi-step chain:
+    User uploads circuit photo -> Agent plans -> Calls search_web_for_circuit_or_model ->
+    Observes datasheet specs -> Calls generate_ltspice_circuit -> Returns synthesized output.
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    agent = CustomAgentBrain(api_key="dummy_key_for_testing")
+    agent.register_tools([
+        search_web_for_circuit_or_model,
+        generate_ltspice_circuit,
+    ])
+
+    # Step 1: Agent decides to search the web for the component in the image
+    call_1 = MagicMock()
+    call_1.name = "search_web_for_circuit_or_model"
+    call_1.args = {"query": "NE555 timer astable circuit pinout", "visual_features": "8-pin DIP IC with timing capacitor"}
+    resp_1 = MagicMock()
+    resp_1.function_calls = [call_1]
+    resp_1.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    # Step 2: Agent observed pinouts and generates LTspice circuit
+    call_2 = MagicMock()
+    call_2.name = "generate_ltspice_circuit"
+    call_2.args = {
+        "title": "NE555_Timer_Circuit",
+        "circuit_type": "low_pass_filter",
+        "specs": {"cutoff_hz": 1000, "c_value_uf": 0.01},
+        "output_filename": "test_ne555_out.cir"
+    }
+    resp_2 = MagicMock()
+    resp_2.function_calls = [call_2]
+    resp_2.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    # Step 3: Agent synthesizes final answer
+    resp_3 = MagicMock()
+    resp_3.function_calls = None
+    resp_3.text = "I researched the NE555 datasheet online and generated the LTspice circuit files test_ne555_out.asc and .cir."
+    resp_3.candidates = [MagicMock(content=types.Content(role="model", parts=[types.Part.from_text(text=resp_3.text)]))]
+
+    agent.client.models.generate_content = MagicMock(side_effect=[resp_1, resp_2, resp_3])
+
+    events = []
+    def on_step(evt, data):
+        events.append((evt, data))
+
+    dummy_circuit_img = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+    final_output = agent.run(
+        "Inspect this circuit photo, find its datasheet pinout online, and build the LTspice schematic.",
+        image_bytes=dummy_circuit_img,
+        image_mime="image/png",
+        step_callback=on_step
+    )
+
+    assert "NE555" in final_output
+    assert agent.client.models.generate_content.call_count == 3
+    assert any(evt == "act" and data.get("tool") == "search_web_for_circuit_or_model" for evt, data in events)
+    assert any(evt == "act" and data.get("tool") == "generate_ltspice_circuit" for evt, data in events)
+
+    # Clean up generated test circuit file if created
+    for f in ["test_ne555_out.cir", "test_ne555_out.asc"]:
+        fpath = os.path.join(OUTPUT_DIR, f)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+
+
+def test_argument_validation_guardrail(monkeypatch):
+    """
+    Guardrail Test: When Gemini requests a tool with invalid or missing arguments,
+    the Python framework catches it before execution and injects an ArgumentValidationError.
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    agent = CustomAgentBrain(api_key="dummy_key_for_testing")
+    agent.register_tool(get_live_weather)
+
+    # Turn 1: Model requests get_live_weather with MISSING required argument 'city'
+    bad_call = MagicMock()
+    bad_call.name = "get_live_weather"
+    bad_call.args = {}  # missing 'city'
+    resp_1 = MagicMock()
+    resp_1.function_calls = [bad_call]
+    resp_1.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    # Turn 2: Model receives the structured argument error and self-corrects with valid argument
+    good_call = MagicMock()
+    good_call.name = "get_live_weather"
+    good_call.args = {"city": "Tokyo"}
+    resp_2 = MagicMock()
+    resp_2.function_calls = [good_call]
+    resp_2.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    # Turn 3: Final answer
+    resp_3 = MagicMock()
+    resp_3.function_calls = None
+    resp_3.text = "Weather in Tokyo is 18°C."
+    resp_3.candidates = [MagicMock(content=types.Content(role="model", parts=[types.Part.from_text(text=resp_3.text)]))]
+
+    agent.client.models.generate_content = MagicMock(side_effect=[resp_1, resp_2, resp_3])
+
+    events = []
+    def on_step(evt, data):
+        events.append((evt, data))
+
+    res = agent.run("What is the weather?", step_callback=on_step)
+    assert "Tokyo is 18°C" in res
+
+    # Verify that the first step recorded an argument validation error
+    error_events = [data for evt, data in events if evt == "observe_error"]
+    assert len(error_events) >= 1
+    assert "Invalid arguments" in error_events[0]["error"] or "missing" in error_events[0]["error"].lower()
+
+
+def test_unknown_tool_guardrail(monkeypatch):
+    """
+    Guardrail Test: If Gemini attempts to request an unregistered tool,
+    the framework rejects it cleanly with ToolNotFoundError.
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    agent = CustomAgentBrain(api_key="dummy_key_for_testing")
+    agent.register_tool(get_live_weather)
+
+    # Turn 1: Model hallucinates an unknown tool
+    call_unknown = MagicMock()
+    call_unknown.name = "non_existent_tool_xyz"
+    call_unknown.args = {"query": "test"}
+    resp_1 = MagicMock()
+    resp_1.function_calls = [call_unknown]
+    resp_1.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    # Turn 2: Model gives final answer
+    resp_2 = MagicMock()
+    resp_2.function_calls = None
+    resp_2.text = "I realized that tool does not exist."
+    resp_2.candidates = [MagicMock(content=types.Content(role="model", parts=[types.Part.from_text(text=resp_2.text)]))]
+
+    agent.client.models.generate_content = MagicMock(side_effect=[resp_1, resp_2])
+
+    events = []
+    def on_step(evt, data):
+        events.append((evt, data))
+
+    res = agent.run("Do something impossible", step_callback=on_step)
+    assert "tool does not exist" in res.lower()
+    error_events = [data for evt, data in events if evt == "observe_error"]
+    assert any("not registered in framework" in d.get("error", "") for d in error_events)
+
+
+def test_ast_math_calculator_security():
+    """
+    Guardrail Test: AST parser calculates valid math but blocks code injection attempts.
+    """
+    # Safe calculations
+    assert "232800.0" in calculate_currency_or_math("1500 * 155.2")
+    assert "22.0" in calculate_currency_or_math("sqrt(144) + 10")
+    assert "= 16" in calculate_currency_or_math("2 ** 4")
+
+    # Code injection and attribute access attacks
+    attack_1 = calculate_currency_or_math("().__class__.__base__")
+    assert "Math Evaluation Error" in attack_1
+    assert "not permitted" in attack_1
+
+    attack_2 = calculate_currency_or_math("__import__('os').system('dir')")
+    assert "Math Evaluation Error" in attack_2
+
+    attack_3 = calculate_currency_or_math("eval('1+1')")
+    assert "Math Evaluation Error" in attack_3
+
+
+def test_structured_observation_format(monkeypatch):
+    """
+    Guardrail Test: Verifies that observation payloads sent back to Gemini
+    are structured dictionaries with tool name, success flag, and result/error.
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    agent = CustomAgentBrain(api_key="dummy_key_for_testing")
+    agent.register_tool(calculate_currency_or_math)
+
+    call_calc = MagicMock()
+    call_calc.name = "calculate_currency_or_math"
+    call_calc.args = {"expression": "25 * 4"}
+    resp_1 = MagicMock()
+    resp_1.function_calls = [call_calc]
+    resp_1.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    resp_2 = MagicMock()
+    resp_2.function_calls = None
+    resp_2.text = "The result is 100."
+    resp_2.candidates = [MagicMock(content=types.Content(role="model", parts=[types.Part.from_text(text=resp_2.text)]))]
+
+    agent.client.models.generate_content = MagicMock(side_effect=[resp_1, resp_2])
+
+    agent.run("Calculate 25 * 4")
+
+    # Inspect the history sent in the second call
+    call_args_list = agent.client.models.generate_content.call_args_list
+    assert len(call_args_list) == 2
+    second_call_contents = call_args_list[1].kwargs["contents"]
+
+    # Locate the tool response content in history
+    tool_resp_content = [c for c in second_call_contents if c.role == "user"][-1]
+    assert tool_resp_content.role == "user"
+    fn_resp_part = tool_resp_content.parts[0]
+    raw_payload = fn_resp_part.function_response.response
+
+    assert raw_payload["tool"] == "calculate_currency_or_math"
+    assert raw_payload["success"] is True
+    assert "100" in str(raw_payload["result"])
+
+
+def test_max_steps_guardrail(monkeypatch):
+    """
+    Guardrail Test: Agent terminates safely when max_steps limit is reached,
+    preventing infinite execution loops.
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    agent = CustomAgentBrain(api_key="dummy_key_for_testing", max_steps=3)
+    agent.register_tool(get_live_weather)
+
+    # Construct an infinite tool call response
+    def make_infinite_call():
+        call = MagicMock()
+        call.name = "get_live_weather"
+        call.args = {"city": "Tokyo"}
+        resp = MagicMock()
+        resp.function_calls = [call]
+        resp.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+        return resp
+
+    agent.client.models.generate_content = MagicMock(side_effect=[
+        make_infinite_call(),
+        make_infinite_call(),
+        make_infinite_call(),
+        make_infinite_call(),
+    ])
+
+    events = []
+    def on_step(evt, data):
+        events.append((evt, data))
+
+    res = agent.run("Loop forever", step_callback=on_step)
+    assert "maximum reasoning/action limit of 3 steps" in res.lower()
+    assert any(evt == "max_steps_reached" and data.get("max_steps") == 3 for evt, data in events)
+    assert agent.client.models.generate_content.call_count == 3
+
+
+def test_calculator_reference_rate_variables():
+    """
+    Verifies that calculate_currency_or_math safely evaluates expressions with
+    documented reference rate variables (e.g. USD_JPY, USD_EUR) and explicitly
+    tags the output as a static reference benchmark rather than a live rate.
+    """
+    res = calculate_currency_or_math("1500 * USD_JPY")
+    assert "232800.0" in res or "232800" in res
+    assert "USD_JPY=155.2" in res
+    assert "ECB" in res
+    assert "NOT a live rate" in res
+
+
+def test_calculator_natural_currency_conversion():
+    """
+    Verifies natural conversion queries like '1500 USD to JPY' and '500 USD into EUR'
+    correctly parse and use documented static reference rates with full attribution.
+    """
+    res_jpy = calculate_currency_or_math("Convert $1500 USD to JPY")
+    assert "232,800.00 JPY" in res_jpy
+    assert "155.2" in res_jpy
+    assert "ECB" in res_jpy
+    assert "NOT a live rate" in res_jpy
+
+    res_eur = calculate_currency_or_math("500 USD into EUR")
+    assert "460.00 EUR" in res_eur
+    assert "0.92" in res_eur
+    assert "ECB" in res_eur
+    assert "NOT a live rate" in res_eur
+
+
+def test_currency_conversion_failure_observation_fallback_flow(monkeypatch):
+    """
+    Proves the exact sequence requested:
+      unreliable_live_rates()
+          ↓
+      external rate service fails (503 Service Unavailable)
+          ↓
+      agent observes failure with structured error and recovery hint
+          ↓
+      Gemini chooses calculate_currency_or_math()
+          ↓
+      calculator uses clearly documented fallback/reference rate
+          ↓
+      conversion succeeds
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    # Ensure live rate simulation is in fault-injection mode (default)
+    monkeypatch.delenv("ENABLE_LIVE_RATES", raising=False)
+
+    agent = CustomAgentBrain(api_key="dummy_key_for_testing", max_steps=5)
+    agent.register_tool(unreliable_live_rates)
+    agent.register_tool(calculate_currency_or_math)
+
+    # Turn 1: Model calls the live rate gateway
+    call_1 = MagicMock()
+    call_1.name = "unreliable_live_rates"
+    call_1.args = {"pair": "USD/JPY"}
+    resp_1 = MagicMock()
+    resp_1.function_calls = [call_1]
+    resp_1.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    # Turn 2: Model observes the 503 error + recovery hint, and calls calculator with documented reference rate
+    call_2 = MagicMock()
+    call_2.name = "calculate_currency_or_math"
+    call_2.args = {"expression": "1500 * USD_JPY"}
+    resp_2 = MagicMock()
+    resp_2.function_calls = [call_2]
+    resp_2.candidates = [MagicMock(content=types.Content(role="model", parts=[]))]
+
+    # Turn 3: Model completes with synthesized answer disclosing the fallback rate
+    resp_3 = MagicMock()
+    resp_3.function_calls = None
+    resp_3.text = (
+        "The live exchange rate service timed out (HTTP 503). "
+        "Falling back to our documented ECB/Fed static reference rate of 155.20 JPY/USD, "
+        "$1500 USD converts to 232,800 JPY. Note that this is a static reference rate, not a live rate."
+    )
+    resp_3.candidates = [MagicMock(content=types.Content(role="model", parts=[types.Part.from_text(text=resp_3.text)]))]
+
+    agent.client.models.generate_content = MagicMock(side_effect=[resp_1, resp_2, resp_3])
+
+    events = []
+    def on_step(evt, data):
+        events.append((evt, data))
+
+    final_output = agent.run(
+        "Convert $1500 USD to JPY using live rates. If unavailable, fall back to our reference rate.",
+        step_callback=on_step
+    )
+
+    # 1. Verify model was called 3 times (PLAN 1 -> PLAN 2 -> PLAN 3)
+    assert agent.client.models.generate_content.call_count == 3
+
+    # 2. Inspect the tool observations recorded in the conversation history
+    final_contents = agent.client.models.generate_content.call_args_list[-1].kwargs["contents"]
+    tool_observations = [
+        c for c in final_contents 
+        if c.role == "user" and c.parts and getattr(c.parts[0], "function_response", None) is not None
+    ]
+    assert len(tool_observations) == 2
+
+    # Verify Turn 1 observation: Failure payload
+    payload_1 = tool_observations[0].parts[0].function_response.response
+    assert payload_1["tool"] == "unreliable_live_rates"
+    assert payload_1["success"] is False
+    assert payload_1["error_type"] == "ConnectionError"
+    assert "503" in payload_1["error"]
+    assert "USD/JPY = 155.20" in payload_1["error"]
+    assert "calculate_currency_or_math" in payload_1["recovery_hint"] or "alternative tool" in payload_1["recovery_hint"]
+
+    # Verify Turn 2 observation: Success payload using reference rate
+    payload_2 = tool_observations[1].parts[0].function_response.response
+    assert payload_2["tool"] == "calculate_currency_or_math"
+    assert payload_2["success"] is True
+    assert "232800.0" in str(payload_2["result"]) or "232800" in str(payload_2["result"])
+    assert "REFERENCE RATE APPLIED" in str(payload_2["result"])
+    assert "ECB" in str(payload_2["result"])
+
+    # 3. Verify final synthesized response
+    assert "232,800" in final_output
+    assert "static reference rate" in final_output.lower()
+
+
+
 
 
 
