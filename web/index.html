@@ -1218,19 +1218,31 @@
         data.files.forEach(f => {
           const isAsc = f.name.endsWith(".asc");
           const isCir = f.name.endsWith(".cir") || f.name.endsWith(".net");
+          const isStep = f.name.endsWith(".step") || f.name.endsWith(".stp");
+          const isStl = f.name.endsWith(".stl");
+          const isDxf = f.name.endsWith(".dxf");
           const isCad = f.name.endsWith("_fusion.py");
           
           let icon = "📄";
           let badge = "";
-          if (isAsc) {
+          if (isStep) {
+            icon = "🧊";
+            badge = '<span style="font-size: 9px; padding: 1px 4px; background: #064e3b; color: #6ee7b7; border-radius: 3px; margin-left: 4px; font-weight: 600;">STEP 3D Solid</span>';
+          } else if (isStl) {
+            icon = "💎";
+            badge = '<span style="font-size: 9px; padding: 1px 4px; background: #1e1b4b; color: #a5b4fc; border-radius: 3px; margin-left: 4px;">STL Mesh</span>';
+          } else if (isDxf) {
+            icon = "📐";
+            badge = '<span style="font-size: 9px; padding: 1px 4px; background: #14532d; color: #86efac; border-radius: 3px; margin-left: 4px;">DXF 2D Sketch</span>';
+          } else if (isAsc) {
             icon = "📐";
             badge = '<span style="font-size: 9px; padding: 1px 4px; background: #082f49; color: #38bdf8; border-radius: 3px; margin-left: 4px;">LTspice Schematic</span>';
           } else if (isCir) {
             icon = "⚡";
             badge = '<span style="font-size: 9px; padding: 1px 4px; background: #1f2937; color: #9ca3af; border-radius: 3px; margin-left: 4px;">SPICE Netlist</span>';
           } else if (isCad) {
-            icon = "🧊";
-            badge = '<span style="font-size: 9px; padding: 1px 4px; background: #164e63; color: #67e8f9; border-radius: 3px; margin-left: 4px;">Fusion 360</span>';
+            icon = "🐍";
+            badge = '<span style="font-size: 9px; padding: 1px 4px; background: #164e63; color: #67e8f9; border-radius: 3px; margin-left: 4px;">Fusion Script</span>';
           }
 
           const item = document.createElement("div");
@@ -1243,7 +1255,7 @@
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
               <span class="file-size">${f.size} B</span>
-              ${isAsc ? `<button class="btn-outline" style="padding: 1px 5px; font-size: 9px; border-color: #0284c7; color: #38bdf8;" onclick="event.stopPropagation(); openInLTspice('${f.name}')">Open</button>` : ""}
+              ${(isAsc || isStep || isStl || isDxf) ? `<button class="btn-outline" style="padding: 1px 5px; font-size: 9px; border-color: #0284c7; color: #38bdf8;" onclick="event.stopPropagation(); openInLTspice('${f.name}')">Open</button>` : ""}
             </div>
           `;
           list.appendChild(item);
@@ -1263,6 +1275,7 @@
           document.getElementById("modalFileContent").textContent = data.content;
 
           const isCircuit = fname.endsWith(".asc") || fname.endsWith(".cir") || fname.endsWith(".net");
+          const isCadDirect = fname.endsWith(".step") || fname.endsWith(".stp") || fname.endsWith(".stl") || fname.endsWith(".dxf");
           const tabs = document.getElementById("modalTabs");
           const openBtn = document.getElementById("openInAppBtn");
           const schematicContainer = document.getElementById("modalSchematicContainer");
@@ -1277,8 +1290,11 @@
             switchModalTab("schematic");
           } else {
             tabs.style.display = "none";
-            openBtn.style.display = fname.endsWith(".py") ? "inline-block" : "none";
-            if (fname.endsWith(".py")) openBtn.textContent = "⚡ Open File";
+            openBtn.style.display = (fname.endsWith(".py") || isCadDirect) ? "inline-block" : "none";
+            if (fname.endsWith(".step") || fname.endsWith(".stp")) openBtn.textContent = "⚡ Open in Fusion 360 (STEP)";
+            else if (fname.endsWith(".stl")) openBtn.textContent = "⚡ Open in CAD (STL)";
+            else if (fname.endsWith(".dxf")) openBtn.textContent = "⚡ Open in CAD (DXF)";
+            else if (fname.endsWith(".py")) openBtn.textContent = "⚡ Open Script";
             schematicContainer.style.display = "none";
             document.getElementById("modalFileContent").style.display = "block";
           }
@@ -1354,6 +1370,26 @@
     function extractCircuitData(text, fname) {
       const combined = (text + " " + fname).toLowerCase();
 
+      if (combined.includes("series") || combined.includes("resistor") || combined.includes("loop") || combined.includes("r3")) {
+        const vinM = text.match(/Source[^\d]*([0-9.]+)/i) || text.match(/V1[:\s=]+([0-9.]+)/i) || text.match(/DC ([0-9.]+)/i);
+        const r1M = text.match(/R1[:\s=]+([0-9.]+\s*[kM]?)/i) || text.match(/R1 1 2 ([0-9.]+[kM]?)/i);
+        const r2M = text.match(/R2[:\s=]+([0-9.]+\s*[kM]?)/i) || text.match(/R2 2 3 ([0-9.]+[kM]?)/i);
+        const r3M = text.match(/R3[:\s=]+([0-9.]+\s*[kM]?)/i) || text.match(/R3 3 0 ([0-9.]+[kM]?)/i);
+        const iM = text.match(/Current[:\s=]+([0-9.]+\s*mA)/i) || text.match(/I=([0-9.]+\s*mA)/i);
+        const rtotM = text.match(/Total[^\d]*([0-9.]+\s*[kM]?\s*Ω)/i);
+        return {
+          type: "series_resistors",
+          data: {
+            vin: vinM ? vinM[1] + "V" : "9V",
+            r1: r1M ? r1M[1] : "3k Ω",
+            r2: r2M ? r2M[1] : "10k Ω",
+            r3: r3M ? r3M[1] : "5k Ω",
+            current: iM ? iM[1] : "0.500 mA",
+            rtot: rtotM ? rtotM[1] : "18k Ω"
+          }
+        };
+      }
+
       if (combined.includes("voltage_divider") || combined.includes("divider")) {
         const vinM = text.match(/Vin[:\s=]+([0-9.]+)/i) || text.match(/V1 in 0 (?:DC )?([0-9.]+)/i);
         const voutM = text.match(/Vout[:\s=]+([0-9.]+)/i);
@@ -1400,6 +1436,78 @@
     }
 
     function buildCircuitSvg(type, data) {
+      if (type === "series_resistors") {
+        const vin = data.vin || "9V";
+        const r1 = data.r1 || "3k Ω";
+        const r2 = data.r2 || "10k Ω";
+        const r3 = data.r3 || "5k Ω";
+        const i = data.current || "0.500 mA";
+        return `
+          <svg width="100%" height="250" viewBox="0 0 540 250" style="background: #080a0f; border-radius: 6px; font-family: ui-monospace, monospace;">
+            <defs>
+              <pattern id="g_series" width="20" height="20" patternUnits="userSpaceOnUse">
+                <circle cx="2" cy="2" r="1" fill="#1e293b" />
+              </pattern>
+            </defs>
+            <rect width="540" height="250" fill="url(#g_series)" />
+            <text x="24" y="24" fill="#38bdf8" font-size="12" font-weight="bold">DC SERIES RESISTOR LOOP SCHEMATIC</text>
+            <text x="24" y="42" fill="#94a3b8" font-size="11">Source: ${vin} • R1: ${r1} • R2: ${r2} • R3: ${r3} • Loop Current: ${i}</text>
+
+            <!-- V1 Source on Left -->
+            <circle cx="70" cy="144" r="22" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/>
+            <text x="70" y="139" fill="#38bdf8" font-size="14" font-weight="bold" text-anchor="middle">+</text>
+            <text x="70" y="157" fill="#94a3b8" font-size="14" font-weight="bold" text-anchor="middle">-</text>
+            <text x="24" y="148" fill="#e2e8f0" font-size="11" font-weight="bold">${vin}</text>
+
+            <!-- Node 1 -->
+            <line x1="70" y1="122" x2="70" y2="80" stroke="#38bdf8" stroke-width="2"/>
+            <circle cx="70" cy="80" r="3.5" fill="#10b981"/>
+            <rect x="52" y="58" width="36" height="17" rx="3" fill="#059669"/>
+            <text x="70" y="70" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Node 1</text>
+            <line x1="70" y1="80" x2="190" y2="80" stroke="#38bdf8" stroke-width="2"/>
+
+            <!-- R1 on Top Wire -->
+            <path d="M 190 80 L 197 68 L 211 92 L 225 68 L 239 92 L 253 68 L 260 80" fill="none" stroke="#facc15" stroke-width="2.5" stroke-linejoin="round"/>
+            <text x="225" y="56" fill="#facc15" font-size="11" font-weight="bold" text-anchor="middle">R1: ${r1}</text>
+            <line x1="260" y1="80" x2="380" y2="80" stroke="#38bdf8" stroke-width="2"/>
+
+            <!-- Node 2 -->
+            <circle cx="380" cy="80" r="3.5" fill="#10b981"/>
+            <rect x="362" y="58" width="36" height="17" rx="3" fill="#059669"/>
+            <text x="380" y="70" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Node 2</text>
+            <line x1="380" y1="80" x2="380" y2="120" stroke="#38bdf8" stroke-width="2"/>
+
+            <!-- R2 on Right Wire -->
+            <path d="M 380 120 L 368 127 L 392 141 L 368 155 L 392 169 L 368 183 L 380 190" fill="none" stroke="#facc15" stroke-width="2.5" stroke-linejoin="round"/>
+            <text x="404" y="158" fill="#facc15" font-size="11" font-weight="bold">R2: ${r2}</text>
+            <line x1="380" y1="190" x2="380" y2="210" stroke="#38bdf8" stroke-width="2"/>
+
+            <!-- Node 3 -->
+            <circle cx="380" cy="210" r="3.5" fill="#10b981"/>
+            <rect x="362" y="215" width="36" height="17" rx="3" fill="#059669"/>
+            <text x="380" y="227" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Node 3</text>
+            <line x1="380" y1="210" x2="260" y2="210" stroke="#38bdf8" stroke-width="2"/>
+
+            <!-- R3 on Bottom Wire -->
+            <path d="M 260 210 L 253 198 L 239 222 L 225 198 L 211 222 L 197 198 L 190 210" fill="none" stroke="#facc15" stroke-width="2.5" stroke-linejoin="round"/>
+            <text x="225" y="234" fill="#facc15" font-size="11" font-weight="bold" text-anchor="middle">R3: ${r3}</text>
+            <line x1="190" y1="210" x2="70" y2="210" stroke="#38bdf8" stroke-width="2"/>
+
+            <!-- Node 4 / Ground -->
+            <circle cx="70" cy="210" r="3.5" fill="#10b981"/>
+            <rect x="52" y="215" width="36" height="17" rx="3" fill="#059669"/>
+            <text x="70" y="227" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Node 4 (0)</text>
+            <line x1="70" y1="210" x2="70" y2="166" stroke="#38bdf8" stroke-width="2"/>
+
+            <!-- Ground symbol -->
+            <line x1="70" y1="210" x2="70" y2="225" stroke="#94a3b8" stroke-width="1.5"/>
+            <line x1="62" y1="225" x2="78" y2="225" stroke="#94a3b8" stroke-width="2"/>
+            <line x1="65" y1="229" x2="75" y2="229" stroke="#94a3b8" stroke-width="1.5"/>
+            <line x1="68" y1="233" x2="72" y2="233" stroke="#94a3b8" stroke-width="1"/>
+          </svg>
+        `;
+      }
+
       if (type === "voltage_divider") {
         const vin = data.vin || "12V";
         const vout = data.vout || "5V";

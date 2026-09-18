@@ -41,7 +41,7 @@ class CustomAgentBrain:
         api_key: str = None,
         model_name: str = "gemini-3.1-flash-lite",
         max_steps: int = 10,
-        fallback_model: Optional[str] = "gemini-flash-latest",
+        fallback_model: Optional[str] = "gemini-3.6-flash",
     ):
         if max_steps is not None and max_steps <= 0:
             raise ValueError(f"max_steps must be a positive integer, received: {max_steps}")
@@ -89,6 +89,8 @@ class CustomAgentBrain:
                 param = sig.parameters.get(param_name)
                 if param and param.annotation != inspect.Parameter.empty:
                     expected_type = param.annotation
+                    if param_value is None and param.default is None:
+                        continue
                     if isinstance(expected_type, type):
                         if expected_type is float:
                             if not isinstance(param_value, (int, float)) or isinstance(param_value, bool):

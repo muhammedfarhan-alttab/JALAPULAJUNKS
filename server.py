@@ -125,7 +125,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 for fname in os.listdir(OUTPUT_DIR):
                     if fname.startswith("."):
                         continue
-                    if fname.endswith((".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", "_fusion.py", ".py")):
+                    if fname.endswith((".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", "_fusion.py", ".py", ".step", ".stp", ".stl", ".dxf")):
                         fpath = os.path.join(OUTPUT_DIR, fname)
                         if os.path.isfile(fpath):
                             stat = os.stat(fpath)
@@ -144,7 +144,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             try:
                 safe_name = _validate_safe_filename(
                     filename,
-                    allowed_extensions={".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", ".py"}
+                    allowed_extensions={".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", ".py", ".step", ".stp", ".stl", ".dxf"}
                 )
             except Exception as val_err:
                 self.send_json({"error": f"Invalid filename: {val_err}"}, status=400)
@@ -192,7 +192,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             try:
                 safe_name = _validate_safe_filename(
                     filename,
-                    allowed_extensions={".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", ".py"}
+                    allowed_extensions={".txt", ".md", ".csv", ".json", ".log", ".cir", ".net", ".asc", ".py", ".step", ".stp", ".stl", ".dxf"}
                 )
             except Exception as val_err:
                 self.send_json({"error": f"Invalid filename: {val_err}"}, status=400)
@@ -205,9 +205,14 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"File '{safe_name}' not found"}, status=404)
                 return
 
-            ltspice_exe = r"C:\Users\Muhammed Farhan\AppData\Local\Programs\LTspice.exe"
+            ltspice_paths = [
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\LTspice.exe"),
+                r"C:\Program Files\ADI\LTspice\LTspice.exe",
+                r"C:\Program Files\LTC\LTspiceXVII\XVIIx64.exe"
+            ]
+            ltspice_exe = next((p for p in ltspice_paths if os.path.exists(p)), None)
             try:
-                if safe_name.endswith((".asc", ".cir", ".net")) and os.path.exists(ltspice_exe):
+                if safe_name.endswith((".asc", ".cir", ".net")) and ltspice_exe:
                     subprocess.Popen([ltspice_exe, file_path])
                 else:
                     os.startfile(file_path)
