@@ -91,21 +91,16 @@ def run_demo_menu():
 
     demos = {
         "1": (
-            "Single-Tool Test: Weather Lookup",
-            "What is the current weather in Tokyo?"
+            "DEMO 1 — Single Tool Execution: Weather in Paris",
+            "What is the weather in Paris?"
         ),
         "2": (
-            "Multi-Tool Chaining: Weather + Math + File Saving",
-            "Check the weather in Tokyo. Convert $1500 USD into Japanese Yen using our documented "
-            "reference benchmark rate (155.2 JPY/USD, ECB reference). "
-            "Then write a complete travel summary report into 'tokyo_plan.txt'."
+            "DEMO 2 — Multi-Tool Dynamic Chaining: Tokyo Weather + $1500 JPY Conversion + Report",
+            "Check the weather in Tokyo, convert $1500 USD to JPY using the available rate mechanism, and save a travel report."
         ),
         "3": (
-            "Error Recovery (The Troublemaker Test: $1500 USD -> JPY Fallback)",
-            "Attempt to fetch the live exchange rate for USD/JPY using the unreliable_live_rates tool. "
-            "When that live service fails or errors out, observe the failure, don't give up, and instead "
-            "fall back to calculate_currency_or_math using our documented reference benchmark (155.20 JPY/USD) "
-            "to convert $1500 USD into Japanese Yen. Finally, save an incident report into 'recovery_log.txt'."
+            "DEMO 3 — Autonomous Failure Recovery: $1500 USD -> JPY Live Outage & Fallback",
+            "Get the USD/JPY rate and convert $1500."
         ),
         "4": (
             "Autodesk Fusion 360 3D CAD Generation",
@@ -124,15 +119,15 @@ def run_demo_menu():
     }
 
     while True:
-        print("\nSelect an action:")
-        print("  1. Run Single-Tool Test (Weather)")
-        print("  2. Run Multi-Tool Chain (Weather + Math + File Save)")
-        print("  3. Run Error Recovery Test (The Troublemaker -> Self-Correction)")
-        print("  4. Run Autodesk Fusion 360 CAD Model Generation")
-        print("  5. Run LTspice Circuit Schematic Generation (.asc)")
-        print("  6. Run Live Web Research (IC Pinouts / CAD Specs)")
-        print("  7. Enter your own custom prompt")
-        print("  8. View Bonus Comparison (Our Engine vs LangChain)")
+        print("\nSelect a demonstration or action:")
+        print("  1. DEMO 1: Single Tool Execution (Paris Weather)")
+        print("  2. DEMO 2: Multi-Tool Dynamic Chaining (Tokyo Weather + $1500 Conversion + Report)")
+        print("  3. DEMO 3: Autonomous Failure Recovery (Troublemaker Outage -> Benchmark Recovery)")
+        print("  4. Autodesk Fusion 360 CAD Generation")
+        print("  5. LTspice Circuit Schematic Generation (.asc)")
+        print("  6. Live Web Research (IC Pinouts / CAD Specs)")
+        print("  7. Enter custom prompt")
+        print("  8. View Architecture Comparison (Custom Engine vs LangChain)")
         print("  Q. Quit")
 
         choice = input("\nEnter choice [1-8 or Q]: ").strip()
@@ -159,14 +154,39 @@ def run_demo_menu():
 
 
 if __name__ == "__main__":
-    # Check if run with non-interactive flag
-    if len(sys.argv) > 1 and sys.argv[1] == "--demo":
+    # Check if run with non-interactive CLI flag: e.g. python main.py --demo 1
+    if len(sys.argv) > 1 and sys.argv[1].startswith("--demo"):
+        target = sys.argv[2] if len(sys.argv) > 2 else (sys.argv[1].split("=")[1] if "=" in sys.argv[1] else "all")
         agent = get_agent()
-        print("\n[AUTOMATED DEMO] Running Error Recovery Test...")
-        agent.run(
-            "Fetch the live exchange rate for USD/EUR using unreliable_live_rates. "
-            "If it fails, recover and use calculate_currency_or_math to convert 500 * 0.92, "
-            "and save the outcome into 'demo_output.txt'."
-        )
+        demo_dict = {
+            "1": (
+                "DEMO 1 — SINGLE TOOL (Paris Weather)",
+                "What is the weather in Paris?"
+            ),
+            "2": (
+                "DEMO 2 — MULTI TOOL (Tokyo Weather + $1500 JPY Conversion + Report)",
+                "Check the weather in Tokyo, convert $1500 USD to JPY using the available rate mechanism, and save a travel report."
+            ),
+            "3": (
+                "DEMO 3 — AUTONOMOUS FAILURE RECOVERY (Troublemaker Live Rate Failure -> Fallback)",
+                "Get the USD/JPY rate and convert $1500."
+            ),
+        }
+        if target in demo_dict:
+            title, prompt = demo_dict[target]
+            print(f"\n==================================================================")
+            print(f"🚀 [RUNNING {title}]")
+            print(f"==================================================================")
+            agent.run(prompt)
+        elif target == "all":
+            for d_id in ["1", "2", "3"]:
+                title, prompt = demo_dict[d_id]
+                print(f"\n==================================================================")
+                print(f"🚀 [RUNNING {title}]")
+                print(f"==================================================================")
+                agent.run(prompt)
+        else:
+            print(f"Unknown demo '{target}'. Available: 1, 2, 3, or all")
+            sys.exit(1)
     else:
         run_demo_menu()

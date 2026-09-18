@@ -39,9 +39,9 @@ class CustomAgentBrain:
     def __init__(
         self,
         api_key: str = None,
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = "gemini-3.1-flash-lite",
         max_steps: int = 10,
-        fallback_model: Optional[str] = None,
+        fallback_model: Optional[str] = "gemini-flash-latest",
     ):
         if max_steps is not None and max_steps <= 0:
             raise ValueError(f"max_steps must be a positive integer, received: {max_steps}")

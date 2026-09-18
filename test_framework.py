@@ -775,9 +775,9 @@ def test_no_hallucinated_models_in_codebase():
     Guardrail Test: Verifies that only the configured model is used and
     invented models like 'gemini-3.5-flash-lite' are not queried.
     """
-    agent = CustomAgentBrain(api_key="test_key", model_name="gemini-2.5-flash")
-    assert agent.model_name == "gemini-2.5-flash"
-    assert agent.fallback_model is None
+    agent = CustomAgentBrain(api_key="test_key", model_name="gemini-3.1-flash-lite", fallback_model="gemini-flash-latest")
+    assert agent.model_name == "gemini-3.1-flash-lite"
+    assert agent.fallback_model == "gemini-flash-latest"
 
 
 def test_troublemaker_tool_fails_immediately_without_retry():
@@ -794,6 +794,140 @@ def test_troublemaker_tool_fails_immediately_without_retry():
     assert "503" in str(exc.value)
     # Must fail in under 0.1 seconds without retry delays
     assert duration < 0.5
+
+
+# =============================================================================
+# HACKATHON DEMO WORKFLOW TESTS
+# =============================================================================
+
+def test_demo_1_single_tool_workflow(monkeypatch):
+    """
+    Demo 1 Test: Single Tool Execution (Paris Weather)
+    USER -> CUSTOM AGENT BRAIN -> GEMINI -> get_live_weather("Paris") -> OBSERVE -> FINAL ANSWER
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")
+    agent = CustomAgentBrain(api_key="dummy_key")
+    agent.register_tool(get_live_weather)
+
+    call_1 = MagicMock()
+    call_1.name = "get_live_weather"
+    call_1.args = {"city": "Paris"}
+    resp_1 = MagicMock(function_calls=[call_1], candidates=[MagicMock(content=types.Content(role="model", parts=[]))])
+
+    resp_2 = MagicMock(
+        function_calls=None,
+        text="The current weather in Paris is 13°C, Clear.",
+        candidates=[MagicMock(content=types.Content(role="model", parts=[types.Part.from_text(text="The current weather in Paris is 13°C, Clear.")]))]
+    )
+
+    agent.client.models.generate_content = MagicMock(side_effect=[resp_1, resp_2])
+
+    events = []
+    res = agent.run("What is the weather in Paris?", step_callback=lambda evt, data: events.append((evt, data)))
+
+    assert "Paris" in res
+    assert agent.client.models.generate_content.call_count == 2
+    assert any(evt == "act" and data.get("tool") == "get_live_weather" for evt, data in events)
+    assert any(evt == "observe_success" and "Paris" in data.get("result", "") for evt, data in events)
+
+
+def test_demo_2_multi_tool_workflow(monkeypatch):
+    """
+    Demo 2 Test: Multi-Tool Dynamic Chaining
+    Tokyo Weather + USD/JPY Conversion + File Save
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")
+    agent = CustomAgentBrain(api_key="dummy_key")
+    agent.register_tools([get_live_weather, calculate_currency_or_math, save_report_file])
+
+    # Step 1: Weather lookup
+    call_1 = MagicMock(name="get_live_weather", args={"city": "Tokyo"})
+    call_1.name = "get_live_weather"
+    resp_1 = MagicMock(function_calls=[call_1], candidates=[MagicMock(content=types.Content(role="model", parts=[]))])
+
+    # Step 2: Rate calculation
+    call_2 = MagicMock(name="calculate_currency_or_math", args={"expression": "1500 * 155.20"})
+    call_2.name = "calculate_currency_or_math"
+    resp_2 = MagicMock(function_calls=[call_2], candidates=[MagicMock(content=types.Content(role="model", parts=[]))])
+
+    # Step 3: File save
+    call_3 = MagicMock(name="save_report_file", args={"filename": "tokyo_travel_report.txt", "content": "Tokyo Report"})
+    call_3.name = "save_report_file"
+    resp_3 = MagicMock(function_calls=[call_3], candidates=[MagicMock(content=types.Content(role="model", parts=[]))])
+
+    # Step 4: Final synthesis
+    resp_4 = MagicMock(
+        function_calls=None,
+        text="Tokyo report created with weather and conversion.",
+        candidates=[MagicMock(content=types.Content(role="model", parts=[types.Part.from_text(text="Tokyo report created")]))]
+    )
+
+    agent.client.models.generate_content = MagicMock(side_effect=[resp_1, resp_2, resp_3, resp_4])
+
+    events = []
+    res = agent.run(
+        "Check the weather in Tokyo, convert $1500 USD to JPY using the available rate mechanism, and save a travel report.",
+        step_callback=lambda evt, data: events.append((evt, data))
+    )
+
+    assert "Tokyo report" in res
+    assert agent.client.models.generate_content.call_count == 4
+    called_tools = [data.get("tool") for evt, data in events if evt == "act"]
+    assert "get_live_weather" in called_tools
+    assert "calculate_currency_or_math" in called_tools
+    assert "save_report_file" in called_tools
+
+    # Cleanup generated report if exists
+    target = os.path.join(OUTPUT_DIR, "tokyo_travel_report.txt")
+    if os.path.exists(target):
+        os.remove(target)
+
+
+def test_demo_3_failure_recovery_workflow(monkeypatch):
+    """
+    Demo 3 Test: Autonomous Failure Recovery
+    unreliable_live_rates fails (503) -> observed -> fallback to calculate_currency_or_math -> success
+    """
+    from unittest.mock import MagicMock
+    from google.genai import types
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")
+    agent = CustomAgentBrain(api_key="dummy_key")
+    agent.register_tools([unreliable_live_rates, calculate_currency_or_math])
+
+    # Step 1: Live rate tool fails with 503
+    call_1 = MagicMock(name="unreliable_live_rates", args={"pair": "USD/JPY"})
+    call_1.name = "unreliable_live_rates"
+    resp_1 = MagicMock(function_calls=[call_1], candidates=[MagicMock(content=types.Content(role="model", parts=[]))])
+
+    # Step 2: Fallback to benchmark calculator
+    call_2 = MagicMock(name="calculate_currency_or_math", args={"expression": "1500 * 155.20"})
+    call_2.name = "calculate_currency_or_math"
+    resp_2 = MagicMock(function_calls=[call_2], candidates=[MagicMock(content=types.Content(role="model", parts=[]))])
+
+    # Step 3: Final answer
+    resp_3 = MagicMock(
+        function_calls=None,
+        text="Live rates were offline. Falling back to reference rate of 155.20, $1500 USD = 232,800 JPY.",
+        candidates=[MagicMock(content=types.Content(role="model", parts=[types.Part.from_text(text="Final")]))]
+    )
+
+    agent.client.models.generate_content = MagicMock(side_effect=[resp_1, resp_2, resp_3])
+
+    events = []
+    res = agent.run("Get the USD/JPY rate and convert $1500.", step_callback=lambda evt, data: events.append((evt, data)))
+
+    assert "232,800" in res
+    assert agent.client.models.generate_content.call_count == 3
+    assert any(evt == "observe_error" and "503" in data.get("error", "") for evt, data in events)
+    assert any(evt == "observe_success" and "232800" in data.get("result", "") for evt, data in events)
+
 
 
 
