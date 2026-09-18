@@ -180,11 +180,18 @@
       background: transparent;
       color: var(--text);
       border: 1px solid var(--border);
+      cursor: pointer;
     }
 
     .btn-outline:hover {
       background: var(--surface-2);
       border-color: var(--border-focus);
+    }
+
+    .btn-outline.active {
+      background: #e4e4e7;
+      color: #09090b;
+      border-color: #e4e4e7;
     }
 
     /* Presets */
@@ -1126,12 +1133,31 @@
         } else if (t === "observe_success") {
           const card = document.createElement("div");
           card.className = "step-card";
+
+          let extraContent = "";
+          if (d.tool === "generate_ltspice_circuit") {
+            const circuitInfo = extractCircuitData(d.result, "");
+            const svgMarkup = buildCircuitSvg(circuitInfo.type, circuitInfo.data);
+            const ascMatch = d.result.match(/'([^']+\.asc)'/);
+            const ascFile = ascMatch ? ascMatch[1] : "lowpassfilter_1khz.asc";
+
+            extraContent = `
+              <div style="margin-top: 12px; border-radius: 6px; overflow: hidden; border: 1px solid #1e293b;">
+                <div style="background: #090d16; padding: 6px 12px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b;">
+                  <span style="font-family: var(--mono); font-size: 11px; color: #38bdf8; font-weight: 600;">📐 DRAWN CIRCUIT SCHEMATIC</span>
+                  <button class="btn-outline" style="padding: 2px 8px; font-size: 10px; border-color: #0284c7; color: #38bdf8;" onclick="openInLTspice('${ascFile}')">⚡ Open in LTspice</button>
+                </div>
+                <div style="padding: 10px; background: #050508;">${svgMarkup}</div>
+              </div>
+            `;
+          }
+
           card.innerHTML = `
             <div class="step-head">
               <span class="tag tag-observe">OBSERVE</span>
               <span>Success: <strong>${d.tool}</strong></span>
             </div>
-            <div class="step-body">${escapeHtml(d.result)}</div>
+            <div class="step-body">${escapeHtml(d.result)}${extraContent}</div>
           `;
           container.appendChild(card);
         } else if (t === "observe_error") {
@@ -1166,6 +1192,8 @@
       }
     }
 
+    let currentOpenFileName = "";
+
     async function refreshFiles() {
       try {
         const res = await fetch("/api/files");
@@ -1179,12 +1207,35 @@
 
         list.innerHTML = "";
         data.files.forEach(f => {
+          const isAsc = f.name.endsWith(".asc");
+          const isCir = f.name.endsWith(".cir") || f.name.endsWith(".net");
+          const isCad = f.name.endsWith("_fusion.py");
+          
+          let icon = "📄";
+          let badge = "";
+          if (isAsc) {
+            icon = "📐";
+            badge = '<span style="font-size: 9px; padding: 1px 4px; background: #082f49; color: #38bdf8; border-radius: 3px; margin-left: 4px;">LTspice Schematic</span>';
+          } else if (isCir) {
+            icon = "⚡";
+            badge = '<span style="font-size: 9px; padding: 1px 4px; background: #1f2937; color: #9ca3af; border-radius: 3px; margin-left: 4px;">SPICE Netlist</span>';
+          } else if (isCad) {
+            icon = "🧊";
+            badge = '<span style="font-size: 9px; padding: 1px 4px; background: #164e63; color: #67e8f9; border-radius: 3px; margin-left: 4px;">Fusion 360</span>';
+          }
+
           const item = document.createElement("div");
           item.className = "file-item";
           item.onclick = () => viewFile(f.name);
           item.innerHTML = `
-            <span class="file-name">📄 ${f.name}</span>
-            <span class="file-size">${f.size} B</span>
+            <div style="display: flex; align-items: center; gap: 4px; overflow: hidden;">
+              <span class="file-name">${icon} ${f.name}</span>
+              ${badge}
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="file-size">${f.size} B</span>
+              ${isAsc ? `<button class="btn-outline" style="padding: 1px 5px; font-size: 9px; border-color: #0284c7; color: #38bdf8;" onclick="event.stopPropagation(); openInLTspice('${f.name}')">Open</button>` : ""}
+            </div>
           `;
           list.appendChild(item);
         });
@@ -1194,17 +1245,306 @@
     }
 
     async function viewFile(fname) {
+      currentOpenFileName = fname;
       try {
         const res = await fetch(`/api/file?name=${encodeURIComponent(fname)}`);
         const data = await res.json();
         if (data.content !== undefined) {
           document.getElementById("modalFileName").textContent = fname;
           document.getElementById("modalFileContent").textContent = data.content;
+
+          const isCircuit = fname.endsWith(".asc") || fname.endsWith(".cir") || fname.endsWith(".net");
+          const tabs = document.getElementById("modalTabs");
+          const openBtn = document.getElementById("openInAppBtn");
+          const schematicContainer = document.getElementById("modalSchematicContainer");
+
+          if (isCircuit) {
+            tabs.style.display = "flex";
+            openBtn.style.display = "inline-block";
+            openBtn.textContent = "⚡ Open in LTspice";
+            
+            const circuitInfo = extractCircuitData(data.content, fname);
+            schematicContainer.innerHTML = buildCircuitSvg(circuitInfo.type, circuitInfo.data);
+            switchModalTab("schematic");
+          } else {
+            tabs.style.display = "none";
+            openBtn.style.display = fname.endsWith(".py") ? "inline-block" : "none";
+            if (fname.endsWith(".py")) openBtn.textContent = "⚡ Open File";
+            schematicContainer.style.display = "none";
+            document.getElementById("modalFileContent").style.display = "block";
+          }
+
           document.getElementById("fileModal").classList.add("open");
         }
       } catch (err) {
         alert("Failed to read file: " + err);
       }
+    }
+
+    function switchModalTab(tab) {
+      const tabSchematic = document.getElementById("tabSchematic");
+      const tabCode = document.getElementById("tabCode");
+      const container = document.getElementById("modalSchematicContainer");
+      const content = document.getElementById("modalFileContent");
+
+      if (tab === "schematic") {
+        tabSchematic.classList.add("active");
+        tabCode.classList.remove("active");
+        container.style.display = "block";
+        content.style.display = "none";
+      } else {
+        tabCode.classList.add("active");
+        tabSchematic.classList.remove("active");
+        container.style.display = "none";
+        content.style.display = "block";
+      }
+    }
+
+    async function openInLTspice(fname) {
+      try {
+        const res = await fetch("/api/open", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: fname }),
+        });
+        const d = await res.json();
+        if (d.success) {
+          // brief toast / acknowledgement
+          const btn = document.getElementById("openInAppBtn");
+          if (btn) {
+            const old = btn.textContent;
+            btn.textContent = "✓ Launched!";
+            setTimeout(() => { btn.textContent = old; }, 2000);
+          }
+        } else {
+          alert("Could not open in LTspice: " + (d.error || "Unknown"));
+        }
+      } catch (e) {
+        alert("Error launching LTspice: " + e);
+      }
+    }
+
+    function openCurrentFileInApp() {
+      if (currentOpenFileName) {
+        openInLTspice(currentOpenFileName);
+      }
+    }
+
+    function extractCircuitData(text, fname) {
+      const combined = (text + " " + fname).toLowerCase();
+
+      if (combined.includes("voltage_divider") || combined.includes("divider")) {
+        const vinM = text.match(/Vin[:\s=]+([0-9.]+)/i) || text.match(/V1 in 0 (?:DC )?([0-9.]+)/i);
+        const voutM = text.match(/Vout[:\s=]+([0-9.]+)/i);
+        const r1M = text.match(/R1[:\s=]+([0-9.]+[kM]?)/i) || text.match(/R1 in out ([0-9.]+[kM]?)/i);
+        const r2M = text.match(/R2[:\s=]+([0-9.]+[kM]?)/i) || text.match(/R2 out 0 ([0-9.]+[kM]?)/i);
+        return {
+          type: "voltage_divider",
+          data: {
+            vin: vinM ? vinM[1] + "V" : "12V",
+            vout: voutM ? voutM[1] + "V" : "5V",
+            r1: r1M ? r1M[1] + " Ω" : "10,000 Ω",
+            r2: r2M ? r2M[1] + " Ω" : "7,142.86 Ω"
+          }
+        };
+      }
+
+      if (combined.includes("inverting_amp") || combined.includes("opamp")) {
+        const gainM = text.match(/Gain[:\s=]+-?([0-9.]+)/i);
+        const rinM = text.match(/Rin[:\s=]+([0-9.]+[kM]?)/i) || text.match(/Rin in .* ([0-9.]+[kM]?)/i);
+        const rfM = text.match(/Rf[:\s=]+([0-9.]+[kM]?)/i) || text.match(/Rf .* out ([0-9.]+[kM]?)/i);
+        return {
+          type: "opamp",
+          data: {
+            gain: gainM ? `-${gainM[1]}` : "-5",
+            rin: rinM ? rinM[1] + " Ω" : "10k Ω",
+            rf: rfM ? rfM[1] + " Ω" : "50k Ω"
+          }
+        };
+      }
+
+      // Default: Low-Pass RC Filter
+      const fcM = text.match(/([0-9.]+)\s*Hz/i) || text.match(/cutoff[:\s=]+([0-9.]+)/i);
+      const rM = text.match(/R1.*[:\s=]+([0-9.]+)/i) || text.match(/R1 in out ([0-9.]+)/i);
+      const cM = text.match(/([0-9.]+)\s*uF/i) || text.match(/C1.* ([0-9.]+)u/i);
+
+      return {
+        type: "low_pass",
+        data: {
+          cutoff: fcM ? `${fcM[1]} Hz` : "1,000 Hz",
+          r: rM ? `${rM[1]} Ω` : "1591.55 Ω",
+          c: cM ? `${cM[1]} µF` : "0.1 µF"
+        }
+      };
+    }
+
+    function buildCircuitSvg(type, data) {
+      if (type === "voltage_divider") {
+        const vin = data.vin || "12V";
+        const vout = data.vout || "5V";
+        const r1 = data.r1 || "10k Ω";
+        const r2 = data.r2 || "7.14k Ω";
+        return `
+          <svg width="100%" height="240" viewBox="0 0 540 240" style="background: #080a0f; border-radius: 6px; font-family: ui-monospace, monospace;">
+            <defs>
+              <pattern id="g_div" width="20" height="20" patternUnits="userSpaceOnUse">
+                <circle cx="2" cy="2" r="1" fill="#1e293b" />
+              </pattern>
+            </defs>
+            <rect width="540" height="240" fill="url(#g_div)" />
+            <text x="24" y="26" fill="#38bdf8" font-size="12" font-weight="bold">PRECISION VOLTAGE DIVIDER SCHEMATIC</text>
+            <text x="24" y="44" fill="#94a3b8" font-size="11">Vin: ${vin} ➔ Vout: ${vout}</text>
+
+            <!-- V1 Source -->
+            <circle cx="70" cy="130" r="22" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/>
+            <text x="70" y="125" fill="#38bdf8" font-size="14" font-weight="bold" text-anchor="middle">+</text>
+            <text x="70" y="143" fill="#94a3b8" font-size="14" font-weight="bold" text-anchor="middle">-</text>
+            <text x="20" y="134" fill="#e2e8f0" font-size="11" font-weight="bold">V1: ${vin}</text>
+
+            <line x1="70" y1="108" x2="70" y2="75" stroke="#38bdf8" stroke-width="2"/>
+            <line x1="70" y1="75" x2="230" y2="75" stroke="#38bdf8" stroke-width="2"/>
+            <rect x="95" y="55" width="34" height="17" rx="3" fill="#0284c7" />
+            <text x="112" y="67" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Vin</text>
+
+            <!-- R1 -->
+            <line x1="230" y1="75" x2="230" y2="90" stroke="#38bdf8" stroke-width="2"/>
+            <path d="M 230 90 L 220 96 L 240 106 L 220 116 L 240 126 L 220 136 L 230 142" fill="none" stroke="#facc15" stroke-width="2.5" stroke-linejoin="round"/>
+            <line x1="230" y1="142" x2="230" y2="155" stroke="#38bdf8" stroke-width="2"/>
+            <text x="250" y="118" fill="#facc15" font-size="11" font-weight="bold">R1: ${r1}</text>
+
+            <!-- Vout node -->
+            <circle cx="230" cy="155" r="3.5" fill="#10b981" />
+            <line x1="230" y1="155" x2="380" y2="155" stroke="#38bdf8" stroke-width="2"/>
+            <circle cx="380" cy="155" r="3.5" fill="#10b981" />
+            <rect x="390" y="145" width="75" height="20" rx="3" fill="#059669" />
+            <text x="427" y="159" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Vout: ${vout}</text>
+
+            <!-- R2 -->
+            <path d="M 230 155 L 220 163 L 240 173 L 220 183 L 240 193 L 220 203 L 230 209" fill="none" stroke="#facc15" stroke-width="2.5" stroke-linejoin="round"/>
+            <line x1="230" y1="209" x2="230" y2="220" stroke="#38bdf8" stroke-width="2"/>
+            <text x="250" y="188" fill="#facc15" font-size="11" font-weight="bold">R2: ${r2}</text>
+
+            <!-- Grounds -->
+            <line x1="216" y1="220" x2="244" y2="220" stroke="#94a3b8" stroke-width="2"/>
+            <line x1="221" y1="225" x2="239" y2="225" stroke="#94a3b8" stroke-width="1.5"/>
+            <line x1="70" y1="152" x2="70" y2="185" stroke="#38bdf8" stroke-width="2"/>
+            <line x1="56" y1="185" x2="84" y2="185" stroke="#94a3b8" stroke-width="2"/>
+            <line x1="61" y1="190" x2="79" y2="190" stroke="#94a3b8" stroke-width="1.5"/>
+          </svg>
+        `;
+      }
+
+      if (type === "opamp") {
+        const gain = data.gain || "-5";
+        const rin = data.rin || "10k Ω";
+        const rf = data.rf || "50k Ω";
+        return `
+          <svg width="100%" height="240" viewBox="0 0 540 240" style="background: #080a0f; border-radius: 6px; font-family: ui-monospace, monospace;">
+            <defs>
+              <pattern id="g_op" width="20" height="20" patternUnits="userSpaceOnUse">
+                <circle cx="2" cy="2" r="1" fill="#1e293b" />
+              </pattern>
+            </defs>
+            <rect width="540" height="240" fill="url(#g_op)" />
+            <text x="24" y="26" fill="#38bdf8" font-size="12" font-weight="bold">INVERTING OP-AMP CIRCUIT SCHEMATIC</text>
+            <text x="24" y="44" fill="#94a3b8" font-size="11">Gain: ${gain} • Rin: ${rin} • Rf: ${rf}</text>
+
+            <circle cx="50" cy="140" r="18" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/>
+            <text x="50" y="112" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Vin</text>
+
+            <line x1="50" y1="140" x2="110" y2="140" stroke="#38bdf8" stroke-width="2"/>
+            <path d="M 110 140 L 117 128 L 131 152 L 145 128 L 159 152 L 173 128 L 180 140" fill="none" stroke="#facc15" stroke-width="2.5" stroke-linejoin="round"/>
+            <line x1="180" y1="140" x2="230" y2="140" stroke="#38bdf8" stroke-width="2"/>
+            <text x="145" y="120" fill="#facc15" font-size="10" font-weight="bold" text-anchor="middle">Rin: ${rin}</text>
+
+            <line x1="210" y1="140" x2="210" y2="70" stroke="#38bdf8" stroke-width="2"/>
+            <circle cx="210" cy="140" r="3" fill="#38bdf8"/>
+            <line x1="210" y1="70" x2="260" y2="70" stroke="#38bdf8" stroke-width="2"/>
+            <path d="M 260 70 L 267 58 L 281 82 L 295 58 L 309 82 L 323 58 L 330 70" fill="none" stroke="#facc15" stroke-width="2.5" stroke-linejoin="round"/>
+            <line x1="330" y1="70" x2="390" y2="70" stroke="#38bdf8" stroke-width="2"/>
+            <text x="295" y="52" fill="#facc15" font-size="10" font-weight="bold" text-anchor="middle">Rf: ${rf}</text>
+            <line x1="390" y1="70" x2="390" y2="155" stroke="#38bdf8" stroke-width="2"/>
+
+            <polygon points="230,120 230,190 330,155" fill="#0f172a" stroke="#e2e8f0" stroke-width="2"/>
+            <text x="242" y="145" fill="#f87171" font-size="14" font-weight="bold">-</text>
+            <text x="242" y="175" fill="#38bdf8" font-size="14" font-weight="bold">+</text>
+
+            <line x1="230" y1="170" x2="200" y2="170" stroke="#38bdf8" stroke-width="2"/>
+            <line x1="200" y1="170" x2="200" y2="190" stroke="#38bdf8" stroke-width="2"/>
+            <line x1="190" y1="190" x2="210" y2="190" stroke="#94a3b8" stroke-width="2"/>
+
+            <line x1="330" y1="155" x2="450" y2="155" stroke="#38bdf8" stroke-width="2"/>
+            <circle cx="390" cy="155" r="3" fill="#38bdf8"/>
+            <circle cx="450" cy="155" r="3.5" fill="#10b981"/>
+            <rect x="460" y="145" width="46" height="20" rx="3" fill="#059669"/>
+            <text x="483" y="159" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Vout</text>
+          </svg>
+        `;
+      }
+
+      // Default: Low-Pass Filter
+      const fc = data.cutoff || "1,000 Hz";
+      const r = data.r || "1591.55 Ω";
+      const c = data.c || "0.1 µF";
+      return `
+        <svg width="100%" height="240" viewBox="0 0 540 240" style="background: #080a0f; border-radius: 6px; font-family: ui-monospace, monospace;">
+          <defs>
+            <pattern id="g_lp" width="20" height="20" patternUnits="userSpaceOnUse">
+              <circle cx="2" cy="2" r="1" fill="#1e293b" />
+            </pattern>
+          </defs>
+          <rect width="540" height="240" fill="url(#g_lp)" />
+          
+          <text x="24" y="26" fill="#38bdf8" font-size="12" font-weight="bold">PASSIVE RC LOW-PASS FILTER SCHEMATIC</text>
+          <text x="24" y="44" fill="#94a3b8" font-size="11">Cutoff Frequency: ${fc} • -20 dB/dec roll-off</text>
+
+          <!-- AC Source V1 -->
+          <circle cx="70" cy="130" r="22" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/>
+          <path d="M 60 130 Q 65 118, 70 130 T 80 130" fill="none" stroke="#38bdf8" stroke-width="2"/>
+          <text x="22" y="125" fill="#e2e8f0" font-size="11" font-weight="bold">V1</text>
+          <text x="22" y="140" fill="#94a3b8" font-size="9">1V AC</text>
+
+          <!-- Top wire -->
+          <line x1="70" y1="108" x2="70" y2="80" stroke="#38bdf8" stroke-width="2"/>
+          <line x1="70" y1="80" x2="160" y2="80" stroke="#38bdf8" stroke-width="2"/>
+
+          <!-- Vin tag -->
+          <circle cx="110" cy="80" r="3.5" fill="#38bdf8" />
+          <rect x="94" y="58" width="32" height="17" rx="3" fill="#0284c7" />
+          <text x="110" y="70" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Vin</text>
+
+          <!-- Resistor R1 -->
+          <line x1="160" y1="80" x2="180" y2="80" stroke="#38bdf8" stroke-width="2"/>
+          <path d="M 180 80 L 187 68 L 201 92 L 215 68 L 229 92 L 243 68 L 250 80" fill="none" stroke="#facc15" stroke-width="2.5" stroke-linejoin="round"/>
+          <line x1="250" y1="80" x2="270" y2="80" stroke="#38bdf8" stroke-width="2"/>
+          <text x="215" y="56" fill="#facc15" font-size="11" font-weight="bold" text-anchor="middle">R1: ${r}</text>
+
+          <!-- Wire to Vout -->
+          <line x1="270" y1="80" x2="430" y2="80" stroke="#38bdf8" stroke-width="2"/>
+          <circle cx="340" cy="80" r="3.5" fill="#38bdf8" />
+          
+          <circle cx="430" cy="80" r="3.5" fill="#10b981" />
+          <rect x="412" y="58" width="36" height="17" rx="3" fill="#059669" />
+          <text x="430" y="70" fill="#fff" font-size="10" font-weight="bold" text-anchor="middle">Vout</text>
+
+          <!-- Capacitor C1 -->
+          <line x1="340" y1="80" x2="340" y2="118" stroke="#38bdf8" stroke-width="2"/>
+          <line x1="318" y1="118" x2="362" y2="118" stroke="#38bdf8" stroke-width="3"/>
+          <line x1="318" y1="128" x2="362" y2="128" stroke="#38bdf8" stroke-width="3"/>
+          <text x="375" y="127" fill="#e2e8f0" font-size="11" font-weight="bold">C1: ${c}</text>
+          <line x1="340" y1="128" x2="340" y2="175" stroke="#38bdf8" stroke-width="2"/>
+
+          <!-- Grounds -->
+          <line x1="326" y1="175" x2="354" y2="175" stroke="#94a3b8" stroke-width="2"/>
+          <line x1="331" y1="180" x2="349" y2="180" stroke="#94a3b8" stroke-width="1.5"/>
+          <line x1="336" y1="185" x2="344" y2="185" stroke="#94a3b8" stroke-width="1"/>
+
+          <line x1="70" y1="152" x2="70" y2="175" stroke="#38bdf8" stroke-width="2"/>
+          <line x1="56" y1="175" x2="84" y2="175" stroke="#94a3b8" stroke-width="2"/>
+          <line x1="61" y1="180" x2="79" y2="180" stroke="#94a3b8" stroke-width="1.5"/>
+          <line x1="66" y1="185" x2="74" y2="185" stroke="#94a3b8" stroke-width="1"/>
+        </svg>
+      `;
     }
 
     function closeModal() {
